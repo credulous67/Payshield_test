@@ -162,10 +162,11 @@ def establish_connection(hsm_ip, hsm_port, hsm_proto):
     print("HSM :", hsm_details['hsm_serno'])
     print("time :", hsm_details['time'])
     print("date :", hsm_details['date'])
+    print("firmware :", hsm_details['firmware'])
     print("#LMKs :", hsm_details['#LMKs'])
     print("#testLMKs :", hsm_details['#testLMKs'])
     print("#oldLMKs :", hsm_details['#oldLMKs'])
-    print("hsm_details :", hsm_details)
+    print("LMK details :", hsm_details['LMK'])
     return(connection)
 
 def get_hsm_details(hsm_details, conn, buffer):
@@ -212,7 +213,7 @@ def get_hsm_status(hsm_details, conn, buffer):
     str_ptr += 6 # get past date
     hsm_details['time'] = response[str_ptr:str_ptr+2].decode() + ':' + response[str_ptr+2:str_ptr+4].decode() + ':' + response[str_ptr+4:str_ptr+6].decode()
     str_ptr += 6 # get past time
-    print("State flags:", response[str_ptr:str_ptr+6].decode())
+    print("State flags:", response[str_ptr:str_ptr+7].decode())
     str_ptr += 6 # get upto tamper state
     if int(response[str_ptr:str_ptr+1].decode()) != 1:
         error_handler('Unit appears to be in tamper state', message, response)
@@ -226,7 +227,7 @@ def get_hsm_status(hsm_details, conn, buffer):
     hsm_details['LMK']={}
     for i in range(hsm_details['#LMKs'] ):
         hsm_details['LMK'][i]={}
-        hsm_details['LMK'][i]['id']=int(response[str_ptr:str_ptr+2].decode())
+        hsm_details['LMK'][i]['id']=int(response[str_ptr:str_ptr+2].decode()) # this is deliberately an int .. leave it !!
         str_ptr+=2 # get past id
         hsm_details['LMK'][i]['authorised']=int(response[str_ptr:str_ptr+1].decode())
         str_ptr+=1 # get past auth'd
