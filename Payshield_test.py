@@ -18,7 +18,7 @@
 #    You should have received a copy of the GNU General Public License
 #    along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-import argparse, socket, string, inspect
+import sys, argparse, socket, string, inspect
 from ipaddress import ip_address
 from typing import Tuple
 from struct import *
@@ -151,53 +151,141 @@ def establish_connection(hsm_ip, hsm_port, hsm_proto):
         buffer = 4096
         if hsm_proto == "tcp":
             connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            connection.settimeout(1)
             connection.connect((str(hsm_ip), int(hsm_port)))
-    except ConnectionError as e:
-        print("Connection issue: ", e)
-    response = get_hsm_status(connection, buffer)
-# decode response from JK and display HSM s/n, LMKs etc
-
+    except Exception as e:
+        print("Unexpected error, connection",e)
+        exit()
+    hsm_details={}
+    hsm_details = get_hsm_details(hsm_details, connection, buffer)
+    print()
+    print("HSM :", hsm_details['hsm_serno'])
+    print("time :", hsm_details['time'])
+    print("date :", hsm_details['date'])
+    print("#LMKs :", hsm_details['#LMKs'])
+    print("#testLMKs :", hsm_details['#testLMKs'])
+    print("#oldLMKs :", hsm_details['#oldLMKs'])
+    print("hsm_details :", hsm_details)
     return(connection)
 
-def get_hsm_status(conn, buffer):
-    header = "TEST"
+def get_hsm_details(hsm_details, conn, buffer):
+    hsm_details={}
+    hsm_details=get_hsm_status(hsm_details, conn, buffer)
+    for i in range(hsm_details['#LMKs']):
+        hsm_details=get_lmk_kcv(i, hsm_details, conn, buffer)
+    return hsm_details
+
+def get_lmk_kcv(id, hsm_details, conn, buffer):
+    header = "LKCV"
+    if len(header) > MSG_HDR_LEN:
+        sys.exit("Length of message header too long. HEADER :", header)
+    host_command = header + 'NC%0' + str(id) # get LMK KCV & firmware
+    size = pack('>h', len(host_command))
+    message = size + host_command.encode()
+    conn.send(message)
+    response = conn.recv(buffer)
+    str_ptr = validate_response(message, response)
+    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+    #print("LMK details:", hsm_details['LMK'])
+    hsm_details['LMK'][id]['KCV']=response[str_ptr:str_ptr+6].decode() # only first 6 digits of 16 digit KCV
+    str_ptr += 16 #get past KCV
+    hsm_details['firmware']=response[str_ptr:str_ptr+9].decode()
+    return hsm_details
+
+
+def get_hsm_status(hsm_details, conn, buffer):
+    header = "STAT"
     if len(header) > MSG_HDR_LEN:
         sys.exit("Length of message header too long. HEADER :", header)
     host_command = header + 'JK' # get instananeous HSM status
     size = pack('>h', len(host_command))
     message = size + host_command.encode()
     conn.send(message)
+# decode response from JK and display HSM s/n, LMKs etc
     # try to decode the result code contained in the reply of the payShield
     response = conn.recv(buffer)
-    validate_response(message, response, header, host_command)
-    return response 
+    str_ptr = validate_response(message, response)
+    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+    hsm_details['hsm_serno'] = response[str_ptr:str_ptr + 12].decode()
+    str_ptr += 12 # get past serial number
+    hsm_details['date'] = response[str_ptr+4:str_ptr+6].decode() + '/' + response[str_ptr+2:str_ptr+4].decode() + '/20' + response[str_ptr:str_ptr+2].decode()
+    str_ptr += 6 # get past date
+    hsm_details['time'] = response[str_ptr:str_ptr+2].decode() + ':' + response[str_ptr+2:str_ptr+4].decode() + ':' + response[str_ptr+4:str_ptr+6].decode()
+    str_ptr += 6 # get past time
+    print("State flags:", response[str_ptr:str_ptr+6].decode())
+    str_ptr += 6 # get upto tamper state
+    if int(response[str_ptr:str_ptr+1].decode()) != 1:
+        error_handler('Unit appears to be in tamper state', message, response)
+    str_ptr += 1 # get past tamper
+    hsm_details['#LMKs'] = int(response[str_ptr:str_ptr+2].decode())
+    str_ptr += 2 # get past LMKs
+    hsm_details['#testLMKs'] = int(response[str_ptr:str_ptr+2].decode())
+    str_ptr += 2 # get past test LMKs
+    hsm_details['#oldLMKs'] = int(response[str_ptr:str_ptr+2].decode())
+    str_ptr += 2 # get past old LMKs
+    hsm_details['LMK']={}
+    for i in range(hsm_details['#LMKs'] ):
+        hsm_details['LMK'][i]={}
+        hsm_details['LMK'][i]['id']=int(response[str_ptr:str_ptr+2].decode())
+        str_ptr+=2 # get past id
+        hsm_details['LMK'][i]['authorised']=int(response[str_ptr:str_ptr+1].decode())
+        str_ptr+=1 # get past auth'd
+        hsm_details['LMK'][i]['#auth']=int(response[str_ptr:str_ptr+2].decode())
+        str_ptr+=2 # get past #auth
+        hsm_details['LMK'][i]['scheme']=response[str_ptr:str_ptr+1].decode()
+        str_ptr+=1 # get past scheme
+        hsm_details['LMK'][i]['algorithm']=LMK_algo(int(response[str_ptr:str_ptr+1].decode()))
+        str_ptr+=1 # get past algorithm
+        hsm_details['LMK'][i]['status']=live_test(response[str_ptr:str_ptr+1].decode())
+        str_ptr+=1 # get past status
+        x = response[str_ptr:].find('\x14'.encode())
+        if x != -1:
+            hsm_details['LMK'][i]['comment']=response[str_ptr:str_ptr+x].decode()
+        str_ptr += x+1
+    return hsm_details
 
-def validate_response(message, response, header, host_command):
-    if len(response) < 2 + MSG_HDR_LEN + 2: # 2 bytes for len + 2 header len + 2 for command
-        error_handler("Incomplete response received", message, response, header)
+def LMK_algo(code):
+    algo_code = {
+            0: '3DES2Key',
+            1: '3DES3Key',
+            2: 'AES 256bit'
+    }
+    return algo_code.get(code, 'Unknown')
+def live_test(code):
+    lt_code = {
+            'L': 'Live',
+            'T': 'Test'
+    }
+    return lt_code.get(code, 'Unknown')
+
+def validate_response(message, response):
+    len_in_response = int.from_bytes(response[:2], byteorder='big', signed=False)
+    if len(response) - 2 != len_in_response: # 2 bytes for message length are not included
+        error_handler("Response length mismatch", message, response)
     else:
-        verb_returned = response[2 + MSG_HDR_LEN:][:2]
-        verb_sent = host_command[MSG_HDR_LEN:][:2]
+        verb_sent = message[2 + MSG_HDR_LEN:][:2].decode()
         verb_expected = verb_sent[0:1] + chr(ord(verb_sent[1:2]) + 1)
-        if verb_returned != verb_expected.encode():
-            error_handler("Response code was not as expected from command sent", message, response, header)
+        verb_returned = response[2 + MSG_HDR_LEN:][:2].decode()
+        if verb_returned != verb_expected:
+            error_handler("Response code does not match command sent", message, response)
 
-    response_len = int.from_bytes(response[:2], byteorder='big', signed=False)
-    if len(response) - 2 != response_len:
-        error_handler("Length mismatch", message, response, header)
-    response_code = 2 + MSG_HDR_LEN +1
-    print("Called from: ", inspect.stack()[1].function)
-    print("Response code: ", response_code, payshield_error_codes(response_code))
-    print("Command sent/received: ", verb_sent, "==>", verb_returned.decode())
-    print_sent_rcvd(message, response, header)
-    return
+    error_code = response[2 + MSG_HDR_LEN + 2:][:2].decode()
+    print("Error code: ", error_code, payshield_error_codes(error_code))
+    if int(error_code) > 0:
+        error_handler("Error code > 0 in respone", message, response)
+    print("Command sent/received:", verb_sent, "==>", verb_returned)
+    print_sent_rcvd(message, response)
+    str_pointer = 2
+    return str_pointer
 
-def error_handler(error, message, response, header):
+def error_handler(error, message, response):
+    print("Error trapped by function:", inspect.stack()[1].function)
     print("ERROR :", error)
-    print_sent_rcvd(message, response, header)
+    print_sent_rcvd(message, response)
     sys.exit()
 
-def print_sent_rcvd(message, response,header):
+def print_sent_rcvd(message, response):
+    header = message[2:2 + MSG_HDR_LEN].decode()
     print("Header :", header)
     print("Header length :", MSG_HDR_LEN)
     # don't print ascii if msg or resp contains non printable chars
@@ -208,9 +296,6 @@ def print_sent_rcvd(message, response,header):
         print("received data (ASCII):", response[2:].decode("ascii", "ignore"))
     print("received data (HEX) :", bytes.hex(response))
     return
-
-
-
 
 ###########################################################################################################
 # Main code starts here
