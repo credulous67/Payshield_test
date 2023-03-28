@@ -159,15 +159,22 @@ def establish_connection(hsm_ip, hsm_port, hsm_proto):
     hsm_details={}
     hsm_details = get_hsm_details(hsm_details, connection, buffer)
     print()
-    print("HSM :", hsm_details['hsm_serno'])
-    print("time :", hsm_details['time'])
-    print("date :", hsm_details['date'])
-    print("firmware :", hsm_details['firmware'])
-    print("#LMKs :", hsm_details['#LMKs'])
-    print("#testLMKs :", hsm_details['#testLMKs'])
-    print("#oldLMKs :", hsm_details['#oldLMKs'])
-    print("LMK details :", hsm_details['LMK'])
-    return(connection)
+    print("You are connected to HSM:", hsm_details['hsm_serno'], "on", hsm_details['date'], "at", hsm_details['time'])
+    print("HSM is running firmware version:", hsm_details['firmware'], "and it has", hsm_details['#LMKs'], "LMKs")
+    for i in range (hsm_details['#LMKs']):
+        a=hsm_details['LMK'][i]
+        print("LMK id:", i, "KCV:", a['KCV'], "ALGORITHM:", a['algorithm'], "SCHEME:", a['scheme'], "COMMENT:", a['comment'])
+    print("You are targetting LMK KCV:", hsm_details['LMK']['target'])
+    print()
+    if __name__ == '__main__':
+        Cont=''
+        while not Cont in ['yes', 'no']:
+            Cont = input('OK to continue? (type yes or no) ').lower()
+        if Cont == 'no':
+            connection.close()
+            sys.exit()
+        if Cont == 'yes':
+            return(connection, buffer)
 
 def get_hsm_details(hsm_details, conn, buffer):
     hsm_details={}
@@ -191,6 +198,15 @@ def get_lmk_kcv(id, hsm_details, conn, buffer):
     hsm_details['LMK'][id]['KCV']=response[str_ptr:str_ptr+6].decode() # only first 6 digits of 16 digit KCV
     str_ptr += 16 #get past KCV
     hsm_details['firmware']=response[str_ptr:str_ptr+9].decode()
+# work out which LMK you are targetting
+    host_command = header + 'NC' # get LMK KCV & firmware
+    size = pack('>h', len(host_command))
+    message = size + host_command.encode()
+    conn.send(message)
+    response = conn.recv(buffer)
+    str_ptr = validate_response(message, response)
+    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+    hsm_details['LMK']['target']=response[str_ptr:str_ptr+6].decode() # only first 6 digits of 16 digit KCV
     return hsm_details
 
 
@@ -233,7 +249,7 @@ def get_hsm_status(hsm_details, conn, buffer):
         str_ptr+=1 # get past auth'd
         hsm_details['LMK'][i]['#auth']=int(response[str_ptr:str_ptr+2].decode())
         str_ptr+=2 # get past #auth
-        hsm_details['LMK'][i]['scheme']=response[str_ptr:str_ptr+1].decode()
+        hsm_details['LMK'][i]['scheme']=LMK_scheme(response[str_ptr:str_ptr+1].decode())
         str_ptr+=1 # get past scheme
         hsm_details['LMK'][i]['algorithm']=LMK_algo(int(response[str_ptr:str_ptr+1].decode()))
         str_ptr+=1 # get past algorithm
@@ -247,8 +263,8 @@ def get_hsm_status(hsm_details, conn, buffer):
 
 def LMK_algo(code):
     algo_code = {
-            0: '3DES2Key',
-            1: '3DES3Key',
+            0: '3DES 2Key',
+            1: '3DES 3Key',
             2: 'AES 256bit'
     }
     return algo_code.get(code, 'Unknown')
@@ -258,6 +274,12 @@ def live_test(code):
             'T': 'Test'
     }
     return lt_code.get(code, 'Unknown')
+def LMK_scheme(code):
+    lmk_code = {
+            'K': 'Keyblock',
+            'V': 'Variant'
+    }
+    return lmk_code.get(code, 'Unknown')
 
 def validate_response(message, response):
     len_in_response = int.from_bytes(response[:2], byteorder='big', signed=False)
@@ -272,8 +294,8 @@ def validate_response(message, response):
 
     error_code = response[2 + MSG_HDR_LEN + 2:][:2].decode()
     print("Error code: ", error_code, payshield_error_codes(error_code))
-    if int(error_code) > 0:
-        error_handler("Error code > 0 in respone", message, response)
+    if error_code != '00':
+        error_handler("Error code <> 0 in respone", message, response)
     print("Command sent/received:", verb_sent, "==>", verb_returned)
     print_sent_rcvd(message, response)
     str_pointer = 2
@@ -292,11 +314,61 @@ def print_sent_rcvd(message, response):
     # don't print ascii if msg or resp contains non printable chars
     if test_printable(message[2:].decode("ascii", "ignore")):
         print("sent data (ASCII) :", message[2:].decode("ascii", "ignore"))
-    print("sent data (HEX) :", bytes.hex(message))
+    else:
+        print("sent data (HEX) :", bytes.hex(message))
     if test_printable((response[2:]).decode("ascii", "ignore")):
         print("received data (ASCII):", response[2:].decode("ascii", "ignore"))
-    print("received data (HEX) :", bytes.hex(response))
+    else:
+        print("received data (HEX) :", bytes.hex(response))
     return
+
+def generate_keys(conn, buffer, key_details):
+    key_details['ZPK1']={}
+    header = "KEYS"
+    if len(header) > MSG_HDR_LEN:
+        sys.exit("Length of message header too long. HEADER :", header)
+    host_command = header + 'A00FFFS#P0T2B00N00' # get instananeous HSM status
+    size = pack('>h', len(host_command))
+    message = size + host_command.encode()
+    conn.send(message)
+# decode response from JK and display HSM s/n, LMKs etc
+    # try to decode the result code contained in the reply of the payShield
+    response = conn.recv(buffer)
+    str_ptr = validate_response(message, response)
+    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+    key_details['ZPK1']=response[str_ptr:].decode()
+    key_details['ZPK2']={}
+    header = "KEYS"
+    if len(header) > MSG_HDR_LEN:
+        sys.exit("Length of message header too long. HEADER :", header)
+    host_command = header + 'A00FFFS#P0T2B00N00' # get instananeous HSM status
+    size = pack('>h', len(host_command))
+    message = size + host_command.encode()
+    conn.send(message)
+# decode response from JK and display HSM s/n, LMKs etc
+    # try to decode the result code contained in the reply of the payShield
+    response = conn.recv(buffer)
+    str_ptr = validate_response(message, response)
+    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+    key_details['ZPK2']=response[str_ptr:].decode()
+    key_details['PVVK1']={}
+    header = "KEYS"
+    if len(header) > MSG_HDR_LEN:
+        sys.exit("Length of message header too long. HEADER :", header)
+    host_command = header + 'A00FFFS#V0T2N00N00' # get instananeous HSM status
+    size = pack('>h', len(host_command))
+    message = size + host_command.encode()
+    conn.send(message)
+# decode response from JK and display HSM s/n, LMKs etc
+    # try to decode the result code contained in the reply of the payShield
+    response = conn.recv(buffer)
+    str_ptr = validate_response(message, response)
+    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+    key_details['PVK1']=response[str_ptr:].decode()
+    print("ZPK1:", key_details['ZPK1'])
+    print("ZPK2:", key_details['ZPK2'])
+    print("PVK1:", key_details['PVK1'])
+    return key_details
 
 ###########################################################################################################
 # Main code starts here
@@ -315,5 +387,8 @@ if args.port is None:
         args.port = 2500
     else: args.port = 1500
 print ("HSM="+str(args.hsm)+" PORT="+str(args.port)+" PROTO="+args.proto)
-hsm_conn=establish_connection(args.hsm, args.port, args.proto)
+hsm_conn, buffer=establish_connection(args.hsm, args.port, args.proto)
+print("continuing")
+key_details={}
+generate_keys(hsm_conn, buffer, key_details)
 hsm_conn.close()
