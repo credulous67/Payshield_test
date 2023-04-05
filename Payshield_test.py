@@ -18,13 +18,28 @@
 #    You should have received a copy of the GNU General Public License
 #    along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-import sys, argparse, socket, string, inspect
+import sys, argparse, socket, string, inspect, secrets, datetime
 from ipaddress import ip_address
+from baluhn import generate # need to dnf install python3-baluhn
 from typing import Tuple
 from struct import *
+from dateutil.relativedelta import *
 
 VERSION = "0.1"
 MSG_HDR_LEN = 4 # should match message header config in QH on HSM
+KB_DEC_TABLE="L7E852B114933025E9389968E16B8CAAB"
+V_DEC_TABLE="0097D0017F96042F"
+
+class bcolours:
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    OKCYAN = '\033[96m'
+    OKGREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
 
 def payshield_error_codes(error_code):
     """This function maps the result code with the error message.
@@ -36,7 +51,7 @@ def payshield_error_codes(error_code):
 
         Parameters
         ----------
-         error_code: str
+
             The status code returned from the payShield 10k
         
          Returns
@@ -153,37 +168,35 @@ def establish_connection(hsm_ip, hsm_port, hsm_proto):
             connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             connection.settimeout(1)
             connection.connect((str(hsm_ip), int(hsm_port)))
+    except TimeoutError as e:
+        print("Unexpected error, connection",e)
+        exit()
     except Exception as e:
         print("Unexpected error, connection",e)
         exit()
-    hsm_details={}
-    hsm_details = get_hsm_details(hsm_details, connection, buffer)
-    print()
-    print("You are connected to HSM:", hsm_details['hsm_serno'], "on", hsm_details['date'], "at", hsm_details['time'])
-    print("HSM is running firmware version:", hsm_details['firmware'], "and it has", hsm_details['#LMKs'], "LMKs")
-    for i in range (hsm_details['#LMKs']):
-        a=hsm_details['LMK'][i]
-        print("LMK id:", i, "KCV:", a['KCV'], "ALGORITHM:", a['algorithm'], "SCHEME:", a['scheme'], "COMMENT:", a['comment'])
-    print("You are targetting LMK KCV:", hsm_details['LMK']['target'])
-    print()
-    if __name__ == '__main__':
-        Cont=''
-        while not Cont in ['yes', 'no']:
-            Cont = input('OK to continue? (type yes or no) ').lower()
-        if Cont == 'no':
-            connection.close()
-            sys.exit()
-        if Cont == 'yes':
-            return(connection, buffer)
+    return(connection, buffer)
 
-def get_hsm_details(hsm_details, conn, buffer):
-    hsm_details={}
-    hsm_details=get_hsm_status(hsm_details, conn, buffer)
-    for i in range(hsm_details['#LMKs']):
-        hsm_details=get_lmk_kcv(i, hsm_details, conn, buffer)
-    return hsm_details
+def get_hsm_details(conn, buffer):
+    h, l=get_hsm_status(conn, buffer)
+# work out which LMK you are targetting
+    host_command = 'TARG' + 'NC' # get LMK KCV & firmware
+    size = pack('>h', len(host_command))
+    message = size + host_command.encode()
+    conn.send(message)
+    response = conn.recv(buffer)
+    str_ptr = validate_response(message, response)
+    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+    h['target_kcv']=response[str_ptr:str_ptr+6].decode() # only first 6 digits of 16 digit KCV
+    target_id=999
+    for i in range(h['#LMKs']):
+        h, l=get_lmk_kcv(i, h, l, conn, buffer)
+        if l[i]['KCV'] == h['target_kcv']:
+            h['target_id'] = l[i]['id']
+            h['target_lmkalgorithm'] = l[i]['algorithm']
+            h['target_lmkscheme'] = l[i]['scheme']
+    return h, l
 
-def get_lmk_kcv(id, hsm_details, conn, buffer):
+def get_lmk_kcv(id, h, l, conn, buffer):
     header = "LKCV"
     if len(header) > MSG_HDR_LEN:
         sys.exit("Length of message header too long. HEADER :", header)
@@ -195,22 +208,15 @@ def get_lmk_kcv(id, hsm_details, conn, buffer):
     str_ptr = validate_response(message, response)
     str_ptr += 8 # get us part header, response code & error code to the meat of the message
     #print("LMK details:", hsm_details['LMK'])
-    hsm_details['LMK'][id]['KCV']=response[str_ptr:str_ptr+6].decode() # only first 6 digits of 16 digit KCV
+    l[id]['KCV']=response[str_ptr:str_ptr+6].decode() # only first 6 digits of 16 digit KCV
     str_ptr += 16 #get past KCV
-    hsm_details['firmware']=response[str_ptr:str_ptr+9].decode()
-# work out which LMK you are targetting
-    host_command = header + 'NC' # get LMK KCV & firmware
-    size = pack('>h', len(host_command))
-    message = size + host_command.encode()
-    conn.send(message)
-    response = conn.recv(buffer)
-    str_ptr = validate_response(message, response)
-    str_ptr += 8 # get us part header, response code & error code to the meat of the message
-    hsm_details['LMK']['target']=response[str_ptr:str_ptr+6].decode() # only first 6 digits of 16 digit KCV
-    return hsm_details
+    h['firmware']=response[str_ptr:str_ptr+9].decode()
+    return h, l
 
 
-def get_hsm_status(hsm_details, conn, buffer):
+def get_hsm_status(conn, buffer):
+    h={}
+    l={}
     header = "STAT"
     if len(header) > MSG_HDR_LEN:
         sys.exit("Length of message header too long. HEADER :", header)
@@ -223,43 +229,43 @@ def get_hsm_status(hsm_details, conn, buffer):
     response = conn.recv(buffer)
     str_ptr = validate_response(message, response)
     str_ptr += 8 # get us part header, response code & error code to the meat of the message
-    hsm_details['hsm_serno'] = response[str_ptr:str_ptr + 12].decode()
+    h['hsm_serno'] = response[str_ptr:str_ptr + 12].decode()
     str_ptr += 12 # get past serial number
-    hsm_details['date'] = response[str_ptr+4:str_ptr+6].decode() + '/' + response[str_ptr+2:str_ptr+4].decode() + '/20' + response[str_ptr:str_ptr+2].decode()
+    h['date'] = response[str_ptr+4:str_ptr+6].decode() + '/' + response[str_ptr+2:str_ptr+4].decode() + '/20' + response[str_ptr:str_ptr+2].decode()
     str_ptr += 6 # get past date
-    hsm_details['time'] = response[str_ptr:str_ptr+2].decode() + ':' + response[str_ptr+2:str_ptr+4].decode() + ':' + response[str_ptr+4:str_ptr+6].decode()
+    h['time'] = response[str_ptr:str_ptr+2].decode() + ':' + response[str_ptr+2:str_ptr+4].decode() + ':' + response[str_ptr+4:str_ptr+6].decode()
     str_ptr += 6 # get past time
-    print("State flags:", response[str_ptr:str_ptr+7].decode())
+    if args.debug:
+        print("State flags:", response[str_ptr:str_ptr+7].decode())
     str_ptr += 6 # get upto tamper state
     if int(response[str_ptr:str_ptr+1].decode()) != 1:
         error_handler('Unit appears to be in tamper state', message, response)
     str_ptr += 1 # get past tamper
-    hsm_details['#LMKs'] = int(response[str_ptr:str_ptr+2].decode())
+    h['#LMKs'] = int(response[str_ptr:str_ptr+2].decode())
     str_ptr += 2 # get past LMKs
-    hsm_details['#testLMKs'] = int(response[str_ptr:str_ptr+2].decode())
+    h['#testLMKs'] = int(response[str_ptr:str_ptr+2].decode())
     str_ptr += 2 # get past test LMKs
-    hsm_details['#oldLMKs'] = int(response[str_ptr:str_ptr+2].decode())
+    h['#oldLMKs'] = int(response[str_ptr:str_ptr+2].decode())
     str_ptr += 2 # get past old LMKs
-    hsm_details['LMK']={}
-    for i in range(hsm_details['#LMKs'] ):
-        hsm_details['LMK'][i]={}
-        hsm_details['LMK'][i]['id']=int(response[str_ptr:str_ptr+2].decode()) # this is deliberately an int .. leave it !!
+    for i in range(h['#LMKs'] ):
+        l[i]={}
+        l[i]['id']=response[str_ptr:str_ptr+2].decode()
         str_ptr+=2 # get past id
-        hsm_details['LMK'][i]['authorised']=int(response[str_ptr:str_ptr+1].decode())
+        l[i]['authorised']=int(response[str_ptr:str_ptr+1].decode())
         str_ptr+=1 # get past auth'd
-        hsm_details['LMK'][i]['#auth']=int(response[str_ptr:str_ptr+2].decode())
+        l[i]['#auth']=int(response[str_ptr:str_ptr+2].decode())
         str_ptr+=2 # get past #auth
-        hsm_details['LMK'][i]['scheme']=LMK_scheme(response[str_ptr:str_ptr+1].decode())
+        l[i]['scheme']=LMK_scheme(response[str_ptr:str_ptr+1].decode())
         str_ptr+=1 # get past scheme
-        hsm_details['LMK'][i]['algorithm']=LMK_algo(int(response[str_ptr:str_ptr+1].decode()))
+        l[i]['algorithm']=LMK_algo(int(response[str_ptr:str_ptr+1].decode()))
         str_ptr+=1 # get past algorithm
-        hsm_details['LMK'][i]['status']=live_test(response[str_ptr:str_ptr+1].decode())
+        l[i]['status']=live_test(response[str_ptr:str_ptr+1].decode())
         str_ptr+=1 # get past status
         x = response[str_ptr:].find('\x14'.encode())
         if x != -1:
-            hsm_details['LMK'][i]['comment']=response[str_ptr:str_ptr+x].decode()
+            l[i]['comment']=response[str_ptr:str_ptr+x].decode()
         str_ptr += x+1
-    return hsm_details
+    return h, l
 
 def LMK_algo(code):
     algo_code = {
@@ -293,13 +299,15 @@ def validate_response(message, response):
             error_handler("Response code does not match command sent", message, response)
 
     error_code = response[2 + MSG_HDR_LEN + 2:][:2].decode()
-    print("Error code: ", error_code, payshield_error_codes(error_code))
-    if error_code != '00':
+    if int(error_code) <= 2: # I have made an assumption here that most times <=2 is usually OK
+        if args.debug:
+            print("Command sent/received:", verb_sent, "==>", verb_returned)
+            print_sent_rcvd(message, response)
+        str_pointer = 2
+        return str_pointer
+    else:
+        print("Error code: ", error_code, payshield_error_codes(error_code))
         error_handler("Error code <> 0 in respone", message, response)
-    print("Command sent/received:", verb_sent, "==>", verb_returned)
-    print_sent_rcvd(message, response)
-    str_pointer = 2
-    return str_pointer
 
 def error_handler(error, message, response):
     print("Error trapped by function:", inspect.stack()[1].function)
@@ -322,53 +330,258 @@ def print_sent_rcvd(message, response):
         print("received data (HEX) :", bytes.hex(response))
     return
 
-def generate_keys(conn, buffer, key_details):
-    key_details['ZPK1']={}
+def generate_keys(conn, buffer, lmk_algo, lmk_scheme):
+    print ("Generating test keys")
+    key_details={}
+    if lmk_scheme == 'keyblock':
+        key_details['DEC_TABLE']=KB_DEC_TABLE
+    else:
+        key_details['DEC_TABLE']=V_DEC_TABLE
+
     header = "KEYS"
+
+# Create ZPK #1
     if len(header) > MSG_HDR_LEN:
         sys.exit("Length of message header too long. HEADER :", header)
-    host_command = header + 'A00FFFS#P0T2B00N00' # get instananeous HSM status
+    print("LMK scheme:", lmk_scheme)
+    if lmk_scheme == 'keyblock':
+        host_command = header + 'A00FFFS#P0T2N00N00'
+    else:
+        host_command = header + 'A00001U'
     size = pack('>h', len(host_command))
     message = size + host_command.encode()
     conn.send(message)
-# decode response from JK and display HSM s/n, LMKs etc
+# decode response from A0 and extract key
     # try to decode the result code contained in the reply of the payShield
     response = conn.recv(buffer)
     str_ptr = validate_response(message, response)
     str_ptr += 8 # get us part header, response code & error code to the meat of the message
-    key_details['ZPK1']=response[str_ptr:].decode()
-    key_details['ZPK2']={}
-    header = "KEYS"
+    k=response[str_ptr:].decode()
+    zpk=key_details['ZPK1']={}
+    zpk['kcv']=k[-6:]
+    zpk['key']=k[:-6]
+
+# Create ZPK #2
     if len(header) > MSG_HDR_LEN:
         sys.exit("Length of message header too long. HEADER :", header)
-    host_command = header + 'A00FFFS#P0T2B00N00' # get instananeous HSM status
+    if lmk_scheme == 'keyblock':
+        host_command = header + 'A00FFFS#P0T2N00E00'
+    else:
+        host_command = header + 'A00001U'
     size = pack('>h', len(host_command))
     message = size + host_command.encode()
     conn.send(message)
-# decode response from JK and display HSM s/n, LMKs etc
+# decode response from A0 and extract key
     # try to decode the result code contained in the reply of the payShield
     response = conn.recv(buffer)
     str_ptr = validate_response(message, response)
     str_ptr += 8 # get us part header, response code & error code to the meat of the message
-    key_details['ZPK2']=response[str_ptr:].decode()
-    key_details['PVVK1']={}
-    header = "KEYS"
+    k=response[str_ptr:].decode()
+    zpk=key_details['ZPK2']={}
+    zpk['kcv']=k[-6:]
+    zpk['key']=k[:-6]
+
+# Create PVK (IBM3624)
     if len(header) > MSG_HDR_LEN:
         sys.exit("Length of message header too long. HEADER :", header)
-    host_command = header + 'A00FFFS#V0T2N00N00' # get instananeous HSM status
+    if lmk_scheme == 'keyblock':
+        host_command = header + 'A00FFFS#V1T2N00E00'
+    else:
+        host_command = header + 'A00002U'
     size = pack('>h', len(host_command))
     message = size + host_command.encode()
     conn.send(message)
-# decode response from JK and display HSM s/n, LMKs etc
+# decode response from A0 and extract key
     # try to decode the result code contained in the reply of the payShield
     response = conn.recv(buffer)
     str_ptr = validate_response(message, response)
     str_ptr += 8 # get us part header, response code & error code to the meat of the message
-    key_details['PVK1']=response[str_ptr:].decode()
-    print("ZPK1:", key_details['ZPK1'])
-    print("ZPK2:", key_details['ZPK2'])
-    print("PVK1:", key_details['PVK1'])
+    k=response[str_ptr:].decode()
+    pvk=key_details['IBMPVK']={}
+    pvk['kcv']=k[-6:]
+    pvk['key']=k[:-6]
+
+# Create PVK (Visa PVV)
+    if len(header) > MSG_HDR_LEN:
+        sys.exit("Length of message header too long. HEADER :", header)
+    if lmk_scheme == 'keyblock':
+        host_command = header + 'A00FFFS#V2T2N00E00'
+    else:
+        host_command = header + 'A00002U'
+    size = pack('>h', len(host_command))
+    message = size + host_command.encode()
+    conn.send(message)
+# decode response from A0 and extract key
+    # try to decode the result code contained in the reply of the payShield
+    response = conn.recv(buffer)
+    str_ptr = validate_response(message, response)
+    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+    k=response[str_ptr:].decode()
+    pvk=key_details['VISAPVK']={}
+    pvk['kcv']=k[-6:]
+    pvk['key']=k[:-6]
+
+# Create CVK
+    if len(header) > MSG_HDR_LEN:
+        sys.exit("Length of message header too long. HEADER :", header)
+    if lmk_scheme == 'keyblock':
+        host_command = header + 'A00FFFS#C0T2N00E00'
+    else:
+        host_command = header + 'A00402U'
+    size = pack('>h', len(host_command))
+    message = size + host_command.encode()
+    conn.send(message)
+# decode response from A0 and extract key
+    # try to decode the result code contained in the reply of the payShield
+    response = conn.recv(buffer)
+    str_ptr = validate_response(message, response)
+    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+    k=response[str_ptr:].decode()
+    cvk=key_details['CVK1']={}
+    cvk['kcv']=k[-6:]
+    cvk['key']=k[:-6]
+
+    if args.debug:
+        print(key_details)
     return key_details
+
+def generate_cards():
+    print("Generating test cards")
+    card_details={}
+    card_details['mastercard']={}
+    card_details['visa']={}
+    x=datetime.datetime.now()
+    random = secrets.SystemRandom()
+
+# Create test Mastercard
+    e = random.randint(0,55)
+    y=x+relativedelta(months=+e)
+    mm=str(y.month).zfill(2)
+    yy=str(y.year-2000).zfill(2)
+    exp_date=mm + yy
+    r = str(random.randint(500000000000000,599999999999999))
+    card = r + str(generate(r))
+    c=card_details['mastercard']
+    c['PAN']=card
+    c['expiry']=exp_date
+
+# Create test Visa
+    e = random.randint(0,55)
+    y=x+relativedelta(months=+e)
+    mm=str(y.month).zfill(2)
+    yy=str(y.year-2000).zfill(2)
+    exp_date=mm + yy
+    r = str(random.randint(400000000000000,499999999999999))
+    card = r + str(generate(r))
+    c=card_details['visa']
+    c['PAN']=card
+    c['expiry']=exp_date
+
+    if args.debug:
+        print(card_details)
+    return card_details
+
+def derive_IBM_pin(conn, buffer, pvk, pan):
+    header = "PINS"
+    encdec=key_details['DEC_TABLE']
+    print("\tDeriving natural IBM PIN", end=' ')
+    if len(header) > MSG_HDR_LEN:
+        sys.exit("Length of message header too long. HEADER :", header)
+    host_command = header + 'EE' + pvk + '0000FFFFFFFF' + '04' + pan[-13:-1] + encdec + "P1234567890ABCDEF"
+    size = pack('>h', len(host_command))
+    message = size + host_command.encode()
+    conn.send(message)
+    response = conn.recv(buffer)
+    str_ptr = validate_response(message, response)
+    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+    pinblock=response[str_ptr:].decode()
+    print("PINblock:", pinblock)
+    return pinblock
+
+def generate_random_pin(conn, buffer, pan):
+    header = "PINS"
+    print("\tGenerating random PIN", end=' ')
+    if len(header) > MSG_HDR_LEN:
+        sys.exit("Length of message header too long. HEADER :", header)
+    host_command = header + 'JA' + pan[-13:-1] + '04'
+    size = pack('>h', len(host_command))
+    message = size + host_command.encode()
+    conn.send(message)
+    response = conn.recv(buffer)
+    str_ptr = validate_response(message, response)
+    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+    pinblock=response[str_ptr:].decode()
+    print("PINblock:", pinblock)
+    return pinblock
+    
+
+def generate_cvv(conn, buffer, cvk, pan, expiry_date, service_code):
+    header="CVVS"
+    print("\tGenerating CVV", end=' ')
+    if len(header) > MSG_HDR_LEN:
+        sys.exit("Length of message header too long. HEADER :", header)
+    host_command = header + 'CW' + cvk + pan + ';' + expiry_date + service_code
+    size = pack('>h', len(host_command))
+    message = size + host_command.encode()
+    conn.send(message)
+    response = conn.recv(buffer)
+    str_ptr = validate_response(message, response)
+    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+    cvv=response[str_ptr:].decode()
+    print("CVV:",cvv)
+    return cvv
+
+def verify_cvv(conn, buffer, cvv, cvk, pan, expiry_date, service_code):
+    header="CVVS"
+    print("\tValidating CVV(", cvv, ")", end=' ')
+    if len(header) > MSG_HDR_LEN:
+        sys.exit("Length of message header too long. HEADER :", header)
+    host_command = header + 'CY' + cvk + cvv + pan + ';' + expiry_date + service_code
+    size = pack('>h', len(host_command))
+    message = size + host_command.encode()
+    conn.send(message)
+    response = conn.recv(buffer)
+    str_ptr = validate_response(message, response)
+    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+    error_code = int(response[2 + MSG_HDR_LEN + 2:][:2].decode())
+    if error_code == 0:
+        print(True)
+        return True
+    else:
+        print(False)
+        return False
+
+def translate_pinblock_lmk_zpk(conn, buffer, zpk, kcv, pan, pinblock, lmk_scheme):
+    header="XL2Z"
+    print("\tTranslating pinblock to ZPK(", kcv,") ISO format 0 / Thales format 1", end=' ')
+    if len(header) > MSG_HDR_LEN:
+        sys.exit("Length of message header too long. HEADER :", header)
+    host_command = header + 'JG' + zpk + '01' + pan[-13:-1] + pinblock
+    size = pack('>h', len(host_command))
+    message = size + host_command.encode()
+    conn.send(message)
+    response = conn.recv(buffer)
+    str_ptr = validate_response(message, response)
+    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+    pinblock=response[str_ptr:].decode()
+    print("PINblock:", pinblock)
+    return pinblock
+
+def translate_pinblock_zpk_zpk(conn, buffer, zpk1, kcv1, zpk2, kcv2, pan, pinblock, lmk_scheme):
+    header="XZ2Z"
+    print("\tTranslating pinblock from ZPK(", kcv1,") to ZPK(", kcv2, ")", end=' ')
+    if len(header) > MSG_HDR_LEN:
+        sys.exit("Length of message header too long. HEADER :", header)
+    host_command = header + 'CC' + zpk1 + zpk2 + '04' + pinblock + '01' + '01' + pan[-13:-1]
+    size = pack('>h', len(host_command))
+    message = size + host_command.encode()
+    conn.send(message)
+    response = conn.recv(buffer)
+    str_ptr = validate_response(message, response)
+    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+    pinblock=response[str_ptr:].decode()
+    print("PINblock:", pinblock)
+    return pinblock
 
 ###########################################################################################################
 # Main code starts here
@@ -378,6 +591,7 @@ parser = argparse.ArgumentParser(prog='Payshied_test.py')
 parser.add_argument("--hsm", help="IP address of HSM to be targetted", type=ip_address)
 parser.add_argument("--port", help="port to target HSM on (default: 1500)")
 parser.add_argument("--proto", help="Protocol to use to connect to HSM, can be tcp, udp or tls (default=tcp)", default="tcp", choices=["tcp", "udp", "tls"], type=str.lower)
+parser.add_argument("--debug", help="Enable debugging to see HSM traces", action='store_true')
 args = parser.parse_args()
 
 if args.hsm is None:
@@ -386,9 +600,65 @@ if args.port is None:
     if args.proto == "tls":
         args.port = 2500
     else: args.port = 1500
-print ("HSM="+str(args.hsm)+" PORT="+str(args.port)+" PROTO="+args.proto)
+if args.debug:
+    print ("HSM="+str(args.hsm)+" PORT="+str(args.port)+" PROTO="+args.proto)
 hsm_conn, buffer=establish_connection(args.hsm, args.port, args.proto)
-print("continuing")
-key_details={}
-generate_keys(hsm_conn, buffer, key_details)
+# h - hsm_details
+# l - lmk_details
+h, l = get_hsm_details(hsm_conn, buffer)
+print()
+print("You are connected to HSM:", h['hsm_serno'], "on", h['date'], "at", h['time'])
+print("HSM is running firmware version:", h['firmware'], "and it has", h['#LMKs'], "LMKs")
+for i in range (h['#LMKs']):
+    a=l[i]
+    if int(h['target_id']) == i:
+        print(bcolours.OKGREEN + "LMK id:", i, "KCV:", a['KCV'], "ALGORITHM:", a['algorithm'], "SCHEME:", a['scheme'], "COMMENT:", a['comment'] + bcolours.ENDC)
+    else:
+        print("LMK id:", i, "KCV:", a['KCV'], "ALGORITHM:", a['algorithm'], "SCHEME:", a['scheme'], "COMMENT:", a['comment'])
+print("You are targetting LMK id:", h['target_id'], "and this is a", h['target_lmkscheme'], h['target_lmkalgorithm'], "LMK")
+print()
+if args.debug:
+    print(h)
+    print(l)
+if __name__ == '__main__':
+    Cont=''
+    while not Cont in ['yes', 'no']:
+        Cont = input('OK to continue? (type yes or no) ').lower()
+    if Cont == 'no':
+        connection.close()
+        sys.exit()
+card_details=generate_cards()
+key_details=generate_keys(hsm_conn, buffer, h['target_lmkalgorithm'].lower(), h['target_lmkscheme'].lower())
+for card in card_details:
+    c=card_details[card]
+    print("Performing crypto for card", c)
+
+# Perform CVV stuff
+    print("CVV Crypto")
+    k=key_details['CVK1']
+    c['cvv']=generate_cvv(hsm_conn, buffer, k['key'], c['PAN'], c['expiry'], '000')
+    verify_cvv(hsm_conn, buffer, c['cvv'], k['key'], c['PAN'], c['expiry'], '000')
+    random = secrets.SystemRandom()
+    rand_cvv = str(random.randint(0,999)).zfill(3)
+    verify_cvv(hsm_conn, buffer, rand_cvv, k['key'], c['PAN'], c['expiry'], '000')
+
+# Perform PIN stuff using IBM method
+    print("PIN Crypto - IBM method")
+    k=key_details['IBMPVK']
+    c['IBMpinblockLMK']=derive_IBM_pin(hsm_conn, buffer, k['key'], c['PAN'])
+    k1=key_details['ZPK1']
+    k2=key_details['ZPK2']
+    c['IBMpinblockZPK1']=translate_pinblock_lmk_zpk(hsm_conn, buffer, k1['key'], k1['kcv'], c['PAN'], c['IBMpinblockLMK'], h['target_lmkscheme'])
+    c['IBMpinblockZPK2']=translate_pinblock_zpk_zpk(hsm_conn, buffer, k1['key'], k1['kcv'], k2['key'], k2['kcv'], c['PAN'], c['IBMpinblockZPK1'], h['target_lmkscheme'])
+
+# Perform PIN stuff using VISA method
+    print("PIN Crypto - Visa method")
+    c['pinblockLMK']=generate_random_pin(hsm_conn, buffer, c['PAN'])
+    k1=key_details['ZPK1']
+    k2=key_details['ZPK2']
+    c['pinblockZPK1']=translate_pinblock_lmk_zpk(hsm_conn, buffer, k1['key'], k1['kcv'], c['PAN'], c['pinblockLMK'], h['target_lmkscheme'])
+    c['pinblockZPK2']=translate_pinblock_zpk_zpk(hsm_conn, buffer, k1['key'], k1['kcv'], k2['key'], k2['kcv'], c['PAN'], c['pinblockZPK1'], h['target_lmkscheme'])
+
+if args.debug:
+    print(card_details)
 hsm_conn.close()
