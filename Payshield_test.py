@@ -18,7 +18,7 @@
 #    You should have received a copy of the GNU General Public License
 #    along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-import sys, argparse, socket, string, inspect, secrets, datetime
+import sys, argparse, socket, string, inspect, secrets, datetime, base64, time
 from ipaddress import ip_address
 from baluhn import generate # need to dnf install python3-baluhn
 from typing import Tuple
@@ -166,7 +166,7 @@ def establish_connection(hsm_ip, hsm_port, hsm_proto):
         buffer = 4096
         if hsm_proto == "tcp":
             connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            connection.settimeout(1)
+            connection.settimeout(120)
             connection.connect((str(hsm_ip), int(hsm_port)))
     except TimeoutError as e:
         print("Unexpected error, connection",e)
@@ -331,7 +331,6 @@ def print_sent_rcvd(message, response):
     return
 
 def generate_keys(conn, buffer, lmk_algo, lmk_scheme):
-    print ("Generating test keys")
     key_details={}
     if lmk_scheme == 'keyblock':
         key_details['DEC_TABLE']=KB_DEC_TABLE
@@ -339,51 +338,44 @@ def generate_keys(conn, buffer, lmk_algo, lmk_scheme):
         key_details['DEC_TABLE']=V_DEC_TABLE
 
     header = "KEYS"
+    if len(header) > MSG_HDR_LEN:
+        sys.exit("Length of message header too long. HEADER :", header)
 
 # Create ZPK #1
-    if len(header) > MSG_HDR_LEN:
-        sys.exit("Length of message header too long. HEADER :", header)
-    print("LMK scheme:", lmk_scheme)
     if lmk_scheme == 'keyblock':
-        host_command = header + 'A00FFFS#P0T2N00N00'
+        host_command = header + 'A00FFFS#72T2N00N00'
     else:
         host_command = header + 'A00001U'
     size = pack('>h', len(host_command))
     message = size + host_command.encode()
     conn.send(message)
-# decode response from A0 and extract key
-    # try to decode the result code contained in the reply of the payShield
     response = conn.recv(buffer)
     str_ptr = validate_response(message, response)
     str_ptr += 8 # get us part header, response code & error code to the meat of the message
     k=response[str_ptr:].decode()
-    zpk=key_details['ZPK1']={}
-    zpk['kcv']=k[-6:]
-    zpk['key']=k[:-6]
+    zk=key_details['ZPK1']={}
+    zk['kcv']=k[-6:]
+    zk['key']=k[:-6]
+    print("\tZPK#1:   ", zk['key'], "KCV:", zk['kcv'])
 
 # Create ZPK #2
-    if len(header) > MSG_HDR_LEN:
-        sys.exit("Length of message header too long. HEADER :", header)
     if lmk_scheme == 'keyblock':
-        host_command = header + 'A00FFFS#P0T2N00E00'
+        host_command = header + 'A00FFFS#72T2N00E00'
     else:
         host_command = header + 'A00001U'
     size = pack('>h', len(host_command))
     message = size + host_command.encode()
     conn.send(message)
-# decode response from A0 and extract key
-    # try to decode the result code contained in the reply of the payShield
     response = conn.recv(buffer)
     str_ptr = validate_response(message, response)
     str_ptr += 8 # get us part header, response code & error code to the meat of the message
     k=response[str_ptr:].decode()
-    zpk=key_details['ZPK2']={}
-    zpk['kcv']=k[-6:]
-    zpk['key']=k[:-6]
+    zk=key_details['ZPK2']={}
+    zk['kcv']=k[-6:]
+    zk['key']=k[:-6]
+    print("\tZPK#2:   ", zk['key'], "KCV:", zk['kcv'])
 
 # Create PVK (IBM3624)
-    if len(header) > MSG_HDR_LEN:
-        sys.exit("Length of message header too long. HEADER :", header)
     if lmk_scheme == 'keyblock':
         host_command = header + 'A00FFFS#V1T2N00E00'
     else:
@@ -391,19 +383,16 @@ def generate_keys(conn, buffer, lmk_algo, lmk_scheme):
     size = pack('>h', len(host_command))
     message = size + host_command.encode()
     conn.send(message)
-# decode response from A0 and extract key
-    # try to decode the result code contained in the reply of the payShield
     response = conn.recv(buffer)
     str_ptr = validate_response(message, response)
     str_ptr += 8 # get us part header, response code & error code to the meat of the message
     k=response[str_ptr:].decode()
-    pvk=key_details['IBMPVK']={}
-    pvk['kcv']=k[-6:]
-    pvk['key']=k[:-6]
+    pk=key_details['IBMPVK']={}
+    pk['kcv']=k[-6:]
+    pk['key']=k[:-6]
+    print("\tIBM PVK: ", pk['key'], "KCV:", pk['kcv'])
 
 # Create PVK (Visa PVV)
-    if len(header) > MSG_HDR_LEN:
-        sys.exit("Length of message header too long. HEADER :", header)
     if lmk_scheme == 'keyblock':
         host_command = header + 'A00FFFS#V2T2N00E00'
     else:
@@ -411,19 +400,16 @@ def generate_keys(conn, buffer, lmk_algo, lmk_scheme):
     size = pack('>h', len(host_command))
     message = size + host_command.encode()
     conn.send(message)
-# decode response from A0 and extract key
-    # try to decode the result code contained in the reply of the payShield
     response = conn.recv(buffer)
     str_ptr = validate_response(message, response)
     str_ptr += 8 # get us part header, response code & error code to the meat of the message
     k=response[str_ptr:].decode()
-    pvk=key_details['VISAPVK']={}
-    pvk['kcv']=k[-6:]
-    pvk['key']=k[:-6]
+    pk=key_details['VISAPVK']={}
+    pk['kcv']=k[-6:]
+    pk['key']=k[:-6]
+    print("\tVisa PVK:", pk['key'], "KCV:", pk['kcv'])
 
 # Create CVK
-    if len(header) > MSG_HDR_LEN:
-        sys.exit("Length of message header too long. HEADER :", header)
     if lmk_scheme == 'keyblock':
         host_command = header + 'A00FFFS#C0T2N00E00'
     else:
@@ -431,22 +417,57 @@ def generate_keys(conn, buffer, lmk_algo, lmk_scheme):
     size = pack('>h', len(host_command))
     message = size + host_command.encode()
     conn.send(message)
-# decode response from A0 and extract key
-    # try to decode the result code contained in the reply of the payShield
     response = conn.recv(buffer)
     str_ptr = validate_response(message, response)
     str_ptr += 8 # get us part header, response code & error code to the meat of the message
     k=response[str_ptr:].decode()
-    cvk=key_details['CVK1']={}
-    cvk['kcv']=k[-6:]
-    cvk['key']=k[:-6]
+    ck=key_details['CVK1']={}
+    ck['kcv']=k[-6:]
+    ck['key']=k[:-6]
+    print("\tCVK:     ", ck['key'], "KCV:", ck['kcv'])
+
+# Create RSA key pair
+    lmk_id=h['target_id']
+    if lmk_scheme == 'keyblock':
+        host_command = header + 'EI2409602#0000'
+    else:
+        host_command = header + 'EI2204802'
+    size = pack('>h', len(host_command))
+    message = size + host_command.encode()
+    conn.send(message)
+    response = conn.recv(buffer)
+    tstamp=time.strftime("%Y%m%d%H%M%S")
+    fname='EI_'+'lmk'+lmk_id+"_"+tstamp+'rcvd'
+    r=open(fname, 'wb')
+    r.write(response)
+    r.close
+    fname='EI_'+'lmk'+lmk_id+"_pub"+tstamp+'.der'
+    p=open(fname, 'wb')
+    if lmk_scheme == 'keyblock':
+        search_FFFF = response.find(b'\x46\x46\x46\x46') # FFFF
+        if search_FFFF:
+            pub=response[10:search_FFFF]
+            priv=response[search_FFFF+4:]
+            bits=4096
+            p.write(pub)
+    else:
+        pub=response[10:280]
+        priv=response[283:]
+        bits=1024
+        p.write(pub)
+    p.close()
+    rk=key_details['RSA']={}
+    rk['public']=pub
+    rk['private']=priv
+    rk['bits']=bits
+    print("\tRSApub-",rk['bits'],"  (HEX):", bytes.hex(rk['public']))
+    print("\tRSApriv-",rk['bits']," (HEX):", bytes.hex(rk['private']))
 
     if args.debug:
         print(key_details)
     return key_details
 
 def generate_cards():
-    print("Generating test cards")
     card_details={}
     card_details['mastercard']={}
     card_details['visa']={}
@@ -464,6 +485,7 @@ def generate_cards():
     c=card_details['mastercard']
     c['PAN']=card
     c['expiry']=exp_date
+    print("\tPAN:", c['PAN'], "EXP:", c['expiry'])
 
 # Create test Visa
     e = random.randint(0,55)
@@ -476,15 +498,16 @@ def generate_cards():
     c=card_details['visa']
     c['PAN']=card
     c['expiry']=exp_date
+    print("\tPAN:", c['PAN'], "EXP:", c['expiry'])
 
     if args.debug:
         print(card_details)
     return card_details
 
 def derive_IBM_pin(conn, buffer, pvk, pan):
-    header = "PINS"
+    header = "dPIN"
     encdec=key_details['DEC_TABLE']
-    print("\tDeriving natural IBM PIN", end=' ')
+    print("\tDeriving natural IBM PIN (EE)", end=' ')
     if len(header) > MSG_HDR_LEN:
         sys.exit("Length of message header too long. HEADER :", header)
     host_command = header + 'EE' + pvk + '0000FFFFFFFF' + '04' + pan[-13:-1] + encdec + "P1234567890ABCDEF"
@@ -498,9 +521,30 @@ def derive_IBM_pin(conn, buffer, pvk, pan):
     print("PINblock:", pinblock)
     return pinblock
 
+def verify_IBM_pin(conn, buffer, zpk, zpkkcv, pvk, pinblock, pan):
+    header = "vPIN"
+    encdec=key_details['DEC_TABLE']
+    print("\tVerifying IBM PIN (EA) under ZPK(", zpkkcv, ")", end=' ')
+    if len(header) > MSG_HDR_LEN:
+        sys.exit("Length of message header too long. HEADER :", header)
+    host_command = header + 'EA' + zpk + pvk + '12' + pinblock + '01' + '04' + pan[-13:-1] + encdec + "P1234567890ABCDEF" + '0000FFFFFFFF'
+    size = pack('>h', len(host_command))
+    message = size + host_command.encode()
+    conn.send(message)
+    response = conn.recv(buffer)
+    str_ptr = validate_response(message, response)
+    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+    error_code = int(response[2 + MSG_HDR_LEN + 2:][:2].decode())
+    if error_code == 0 or error_code == 2: # 02 because double length PVK
+        print(bcolours.OKGREEN, True, bcolours.ENDC)
+        return True
+    else:
+        print(bcolours.FAIL, False, bcolours.ENDC)
+        return False
+
 def generate_random_pin(conn, buffer, pan):
-    header = "PINS"
-    print("\tGenerating random PIN", end=' ')
+    header = "gPIN"
+    print("\tGenerating random PIN (JA)", end=' ')
     if len(header) > MSG_HDR_LEN:
         sys.exit("Length of message header too long. HEADER :", header)
     host_command = header + 'JA' + pan[-13:-1] + '04'
@@ -514,10 +558,30 @@ def generate_random_pin(conn, buffer, pan):
     print("PINblock:", pinblock)
     return pinblock
     
+def verify_random_pin(conn, buffer, zpk, zpkkcv, pinblock, pan, lmkpin):
+    header = "vPIN"
+    encdec=key_details['DEC_TABLE']
+    print("\tVerifying random PIN (BE) under ZPK(", zpkkcv, ")", end=' ')
+    if len(header) > MSG_HDR_LEN:
+        sys.exit("Length of message header too long. HEADER :", header)
+    host_command = header + 'BE' + zpk + pinblock + '01' + pan[-13:-1] + lmkpin
+    size = pack('>h', len(host_command))
+    message = size + host_command.encode()
+    conn.send(message)
+    response = conn.recv(buffer)
+    str_ptr = validate_response(message, response)
+    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+    error_code = int(response[2 + MSG_HDR_LEN + 2:][:2].decode())
+    if error_code == 0 or error_code == 2: # 02 because double length PVK
+        print(bcolours.OKGREEN, True, bcolours.ENDC)
+        return True
+    else:
+        print(bcolours.FAIL, False, bcolours.ENDC)
+        return False
 
 def generate_cvv(conn, buffer, cvk, pan, expiry_date, service_code):
-    header="CVVS"
-    print("\tGenerating CVV", end=' ')
+    header="gCVV"
+    print("\tGenerating CVV (CW)", end=' ')
     if len(header) > MSG_HDR_LEN:
         sys.exit("Length of message header too long. HEADER :", header)
     host_command = header + 'CW' + cvk + pan + ';' + expiry_date + service_code
@@ -532,8 +596,8 @@ def generate_cvv(conn, buffer, cvk, pan, expiry_date, service_code):
     return cvv
 
 def verify_cvv(conn, buffer, cvv, cvk, pan, expiry_date, service_code):
-    header="CVVS"
-    print("\tValidating CVV(", cvv, ")", end=' ')
+    header="vCVV"
+    print("\tValidating CVV (CY):", cvv, end=' ')
     if len(header) > MSG_HDR_LEN:
         sys.exit("Length of message header too long. HEADER :", header)
     host_command = header + 'CY' + cvk + cvv + pan + ';' + expiry_date + service_code
@@ -545,15 +609,15 @@ def verify_cvv(conn, buffer, cvv, cvk, pan, expiry_date, service_code):
     str_ptr += 8 # get us part header, response code & error code to the meat of the message
     error_code = int(response[2 + MSG_HDR_LEN + 2:][:2].decode())
     if error_code == 0:
-        print(True)
+        print(bcolours.OKGREEN, True, bcolours.ENDC)
         return True
     else:
-        print(False)
+        print(bcolours.FAIL, False, bcolours.ENDC)
         return False
 
 def translate_pinblock_lmk_zpk(conn, buffer, zpk, kcv, pan, pinblock, lmk_scheme):
-    header="XL2Z"
-    print("\tTranslating pinblock to ZPK(", kcv,") ISO format 0 / Thales format 1", end=' ')
+    header="xL2Z"
+    print("\tTranslating pinblock (JG) from LMK to ZPK(", kcv,") ISO format 0 / Thales format 1", end=' ')
     if len(header) > MSG_HDR_LEN:
         sys.exit("Length of message header too long. HEADER :", header)
     host_command = header + 'JG' + zpk + '01' + pan[-13:-1] + pinblock
@@ -568,20 +632,57 @@ def translate_pinblock_lmk_zpk(conn, buffer, zpk, kcv, pan, pinblock, lmk_scheme
     return pinblock
 
 def translate_pinblock_zpk_zpk(conn, buffer, zpk1, kcv1, zpk2, kcv2, pan, pinblock, lmk_scheme):
-    header="XZ2Z"
-    print("\tTranslating pinblock from ZPK(", kcv1,") to ZPK(", kcv2, ")", end=' ')
+    header="xZ2Z"
+    print("\tTranslating pinblock (CC) from ZPK(", kcv1,") to ZPK(", kcv2, ")", end=' ')
     if len(header) > MSG_HDR_LEN:
         sys.exit("Length of message header too long. HEADER :", header)
-    host_command = header + 'CC' + zpk1 + zpk2 + '04' + pinblock + '01' + '01' + pan[-13:-1]
+    host_command = header + 'CC' + zpk1 + zpk2 + '12' + pinblock + '01' + '01' + pan[-13:-1]
     size = pack('>h', len(host_command))
     message = size + host_command.encode()
     conn.send(message)
     response = conn.recv(buffer)
     str_ptr = validate_response(message, response)
     str_ptr += 8 # get us part header, response code & error code to the meat of the message
-    pinblock=response[str_ptr:].decode()
+    str_ptr += 2 # get past PIN length
+    pinblock=response[str_ptr:-2].decode() # omit last 2 chars (dest pin block format
     print("PINblock:", pinblock)
     return pinblock
+
+def generate_pvv(conn, buffer, pvk, pvkkcv, pinblock, pan):
+    header="xZ2Z"
+    print("\tGenerating PVV (DG) using PVK(", pvkkcv, ")", end=' ')
+    if len(header) > MSG_HDR_LEN:
+        sys.exit("Length of message header too long. HEADER :", header)
+    host_command = header + 'DG' + pvk + pinblock + pan[-13:-1] + '0' # 0 at end is PVKI (0-6)
+    size = pack('>h', len(host_command))
+    message = size + host_command.encode()
+    conn.send(message)
+    response = conn.recv(buffer)
+    str_ptr = validate_response(message, response)
+    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+    pvv=response[str_ptr:].decode()
+    print("PVV:", pvv)
+    return pvv
+
+def verify_pvv(conn, buffer, zpk, zpkkcv, pvk, pinblock, pan, pvv):
+    header="vPVV"
+    print("\tValidating PVV (EC) from ZPK(", zpkkcv, "):", pvv, end=' ')
+    if len(header) > MSG_HDR_LEN:
+        sys.exit("Length of message header too long. HEADER :", header)
+    host_command = header + 'EC' + zpk + pvk + pinblock + '01' + pan[-13:-1] + '0' + pvv
+    size = pack('>h', len(host_command))
+    message = size + host_command.encode()
+    conn.send(message)
+    response = conn.recv(buffer)
+    str_ptr = validate_response(message, response)
+    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+    error_code = int(response[2 + MSG_HDR_LEN + 2:][:2].decode())
+    if error_code == 0:
+        print(bcolours.OKGREEN, True, bcolours.ENDC)
+        return True
+    else:
+        print(bcolours.FAIL, False, bcolours.ENDC)
+        return False
 
 ###########################################################################################################
 # Main code starts here
@@ -627,38 +728,55 @@ if __name__ == '__main__':
     if Cont == 'no':
         connection.close()
         sys.exit()
+print("Creating collateral")
 card_details=generate_cards()
 key_details=generate_keys(hsm_conn, buffer, h['target_lmkalgorithm'].lower(), h['target_lmkscheme'].lower())
 for card in card_details:
     c=card_details[card]
+    print()
     print("Performing crypto for card", c)
 
 # Perform CVV stuff
     print("CVV Crypto")
-    k=key_details['CVK1']
-    c['cvv']=generate_cvv(hsm_conn, buffer, k['key'], c['PAN'], c['expiry'], '000')
-    verify_cvv(hsm_conn, buffer, c['cvv'], k['key'], c['PAN'], c['expiry'], '000')
+    kc=key_details['CVK1']
+    c['cvv']=generate_cvv(hsm_conn, buffer, kc['key'], c['PAN'], c['expiry'], '000')
+    verify_cvv(hsm_conn, buffer, c['cvv'], kc['key'], c['PAN'], c['expiry'], '000')
     random = secrets.SystemRandom()
     rand_cvv = str(random.randint(0,999)).zfill(3)
-    verify_cvv(hsm_conn, buffer, rand_cvv, k['key'], c['PAN'], c['expiry'], '000')
+    verify_cvv(hsm_conn, buffer, rand_cvv, kc['key'], c['PAN'], c['expiry'], '000')
 
 # Perform PIN stuff using IBM method
     print("PIN Crypto - IBM method")
-    k=key_details['IBMPVK']
-    c['IBMpinblockLMK']=derive_IBM_pin(hsm_conn, buffer, k['key'], c['PAN'])
-    k1=key_details['ZPK1']
-    k2=key_details['ZPK2']
-    c['IBMpinblockZPK1']=translate_pinblock_lmk_zpk(hsm_conn, buffer, k1['key'], k1['kcv'], c['PAN'], c['IBMpinblockLMK'], h['target_lmkscheme'])
-    c['IBMpinblockZPK2']=translate_pinblock_zpk_zpk(hsm_conn, buffer, k1['key'], k1['kcv'], k2['key'], k2['kcv'], c['PAN'], c['IBMpinblockZPK1'], h['target_lmkscheme'])
+    kp=key_details['IBMPVK']
+    c['IBMpinblockLMK']=derive_IBM_pin(hsm_conn, buffer, kp['key'], c['PAN'])
+    kz1=key_details['ZPK1']
+    kz2=key_details['ZPK2']
+    c['IBMpinblockZPK1']=translate_pinblock_lmk_zpk(hsm_conn, buffer, kz1['key'], kz1['kcv'], c['PAN'], c['IBMpinblockLMK'], h['target_lmkscheme'])
+    c['IBMpinblockZPK2']=translate_pinblock_zpk_zpk(hsm_conn, buffer, kz1['key'], kz1['kcv'], kz2['key'], kz2['kcv'], c['PAN'], c['IBMpinblockZPK1'], h['target_lmkscheme'])
+    verify_IBM_pin(hsm_conn, buffer, kz1['key'], kz1['kcv'], kp['key'], c['IBMpinblockZPK1'], c['PAN'])
+    verify_IBM_pin(hsm_conn, buffer, kz2['key'], kz2['kcv'], kp['key'], c['IBMpinblockZPK2'], c['PAN'])
 
-# Perform PIN stuff using VISA method
-    print("PIN Crypto - Visa method")
+# Perform PIN stuff using random PIN
+    print("PIN Crypto - random PIN")
     c['pinblockLMK']=generate_random_pin(hsm_conn, buffer, c['PAN'])
-    k1=key_details['ZPK1']
-    k2=key_details['ZPK2']
-    c['pinblockZPK1']=translate_pinblock_lmk_zpk(hsm_conn, buffer, k1['key'], k1['kcv'], c['PAN'], c['pinblockLMK'], h['target_lmkscheme'])
-    c['pinblockZPK2']=translate_pinblock_zpk_zpk(hsm_conn, buffer, k1['key'], k1['kcv'], k2['key'], k2['kcv'], c['PAN'], c['pinblockZPK1'], h['target_lmkscheme'])
+    kz1=key_details['ZPK1']
+    kz2=key_details['ZPK2']
+    c['pinblockZPK1']=translate_pinblock_lmk_zpk(hsm_conn, buffer, kz1['key'], kz1['kcv'], c['PAN'], c['pinblockLMK'], h['target_lmkscheme'])
+    c['pinblockZPK2']=translate_pinblock_zpk_zpk(hsm_conn, buffer, kz1['key'], kz1['kcv'], kz2['key'], kz2['kcv'], c['PAN'], c['pinblockZPK1'], h['target_lmkscheme'])
+    verify_random_pin(hsm_conn, buffer, kz1['key'], kz1['kcv'], c['pinblockZPK1'], c['PAN'], c['pinblockLMK'])
+    verify_random_pin(hsm_conn, buffer, kz2['key'], kz2['kcv'], c['pinblockZPK2'], c['PAN'], c['pinblockLMK'])
 
+# Perform PIN stuff using Visa method
+    print("PIN Crypto - Visa method")
+    kp=key_details['VISAPVK']
+    c['PVV']=generate_pvv(hsm_conn, buffer, kp['key'], kp['kcv'], c['pinblockLMK'], c['PAN'])
+    verify_pvv(hsm_conn, buffer, kz1['key'], kz1['kcv'], kp['key'], c['pinblockZPK1'], c['PAN'], c['PVV'])
+    verify_pvv(hsm_conn, buffer, kz2['key'], kz2['kcv'], kp['key'], c['pinblockZPK2'], c['PAN'], c['PVV'])
+
+# Perform RSA crypto
+    print("RSA Crypto")
+
+    
 if args.debug:
     print(card_details)
 hsm_conn.close()
