@@ -320,6 +320,12 @@ def print_sent_rcvd(message, response):
     print("Header :", header)
     print("Header length :", MSG_HDR_LEN)
     # don't print ascii if msg or resp contains non printable chars
+    m=open('failed_command.sent', 'wb')
+    m.write(message)
+    m.close()
+    r=open('failed_command.rcvd', 'wb')
+    r.write(response)
+    r.close()
     if test_printable(message[2:].decode("ascii", "ignore")):
         print("sent data (ASCII) :", message[2:].decode("ascii", "ignore"))
     else:
@@ -429,32 +435,35 @@ def generate_keys(conn, buffer, lmk_algo, lmk_scheme):
 # Create RSA key pair
     lmk_id=h['target_id']
     if lmk_scheme == 'keyblock':
-        host_command = header + 'EI2102402#0000'
+        host_command = header + 'EI2409602#0000'
     else:
-        host_command = header + 'EI2102402'
+        host_command = header + 'EI2204802'
     size = pack('>h', len(host_command))
     message = size + host_command.encode()
     conn.send(message)
     response = conn.recv(buffer)
-    tstamp=time.strftime("%Y%m%d%H%M%S")
-    fname='EI_'+'lmk'+lmk_id+"_"+tstamp+'rcvd'
-    r=open(fname, 'wb')
-    r.write(response)
-    r.close
+    str_ptr = validate_response(message, response)
+    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+#    tstamp=time.strftime("%Y%m%d%H%M%S")
+#    fname='EI_'+'lmk'+lmk_id+"_"+tstamp+'rcvd'
+#    r=open(fname, 'wb')
+#    r.write(response)
+#    r.close
     # find end of public key (HEX 02 03 01 00 01)
     search_EoP = response.find(b'\x02\x03\x01\x00\x01')
+    print("Search_EoP:", search_EoP, hex(search_EoP))
     if search_EoP:
         pub=response[10:search_EoP+5]
         priv=response[search_EoP+5+4:] # Extra 4 is to skip the private key length
         bits=get_bit_length(pub)
-    fname='EI_'+'lmk'+lmk_id+"_pub"+tstamp+'.der'
-    p=open(fname, 'wb')
-    p.write(pub)
-    p.close()
-    fname='EI_'+'lmk'+lmk_id+"_priv"+tstamp+'.der'
-    p=open(fname, 'wb')
-    p.write(priv)
-    p.close()
+#    fname='EI_'+'lmk'+lmk_id+"_pub"+tstamp+'.der'
+#    p=open(fname, 'wb')
+#    p.write(pub)
+#    p.close()
+#    fname='EI_'+'lmk'+lmk_id+"_priv"+tstamp+'.der'
+#    p=open(fname, 'wb')
+#    p.write(priv)
+#    p.close()
     rk=key_details['RSA']={}
     rk['public']=pub
     rk['private']=priv
@@ -464,6 +473,7 @@ def generate_keys(conn, buffer, lmk_algo, lmk_scheme):
 
     if args.debug:
         print(key_details)
+
     return key_details
 
 def get_bit_length(pub_key):
@@ -693,28 +703,55 @@ def generate_signature(conn, buffer, message, privkey, lmkscheme):
         sys.exit("Length of message header too long. HEADER :", header)
     msg_size = str(len(message)).zfill(4)
     key_size = str(len(privkey)).zfill(4)
-    key_size = bytes(str(len(privkey)).zfill(4), 'ascii')
     print()
     print("MSG_size:", msg_size)
     print("KEY_size:", key_size)
     if lmkscheme == 'keyblock':
-        host_command = header + 'EW' + '060104'+ msg_size + message + ';99FFFF' + bytes.hex(privkey)
+        host_command = header + 'EW' + '060104'+ msg_size + message + ';99FFFF'
     else:
-        host_command = header + 'EW' + '060104'+ msg_size + message + ';99' + bytes.hex(key_size) + bytes.hex(privkey)
-    size = pack('>h', len(host_command))
-    message = size + host_command.encode()
+        host_command = header + 'EW' + '060104'+ msg_size + message + ';99' + key_size
+    tmp_msg = host_command.encode() + privkey
+    size = pack('>h', len(tmp_msg))
+    message = size + tmp_msg
     conn.send(message)
     response = conn.recv(buffer)
     str_ptr = validate_response(message, response)
     str_ptr += 8 # get us part header, response code & error code to the meat of the message
     error_code = int(response[2 + MSG_HDR_LEN + 2:][:2].decode())
-    sig_len=response[str_ptr:4].decode()
-    str_len += 4
-    signature=response[str_ptr:].decode()
+    sig_len=response[str_ptr:str_ptr+4].decode()
+    str_ptr += 4
+    signature=bytes.hex(response[str_ptr:])
     print("Sig len:", sig_len)
     print("Signature:", signature)
     return sig_len, signature
 
+def validate_signature(conn, buffer, sig_len, signature, message, pubkey, lmkscheme):
+    header="vRSA"
+    print("\tvalidate signature for MSG=", message, ":", end=' ')
+    if len(header) > MSG_HDR_LEN:
+        sys.exit("Length of message header too long. HEADER :", header)
+    msg_size = str(len(message)).zfill(4)
+    key_size = str(len(key)).zfill(4)
+    print()
+    print("MSG_size:", msg_size)
+    print("KEY_size:", key_size)
+    host_command = (header + 'EY' + '060104'+ sig_len).encode()
+    host_command += pubkey + ';'.decode()
+    if lmkscheme == 'keyblock':
+        print('keyblock')
+    else:
+        host_command = header + 'EY' + '060102'+ msg_size + message + ';99' + key_size
+    tmp_msg = host_command.encode() + privkey
+    size = pack('>h', len(tmp_msg))
+    message = size + tmp_msg
+    conn.send(message)
+    response = conn.recv(buffer)
+    str_ptr = validate_response(message, response)
+    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+    error_code = int(response[2 + MSG_HDR_LEN + 2:][:2].decode())
+    sig_len=response[str_ptr:str_ptr+4].decode()
+    str_ptr += 4
+    return 
 
 ###########################################################################################################
 # Main code starts here
@@ -806,9 +843,11 @@ for card in card_details:
     verify_pvv(hsm_conn, buffer, kz2['key'], kz2['kcv'], kp['key'], c['pinblockZPK2'], c['PAN'], c['PVV'])
 
 # Perform RSA crypto
-    print("RSA Crypto")
-    kr=key_details['RSA']
-    sig_len, signature=generate_signature(hsm_conn, buffer, 'Hello World!', kr['private'], h['target_lmkscheme'].lower())
+print("RSA Crypto")
+kr=key_details['RSA']
+message="Hello World!"
+sig_len, signature=generate_signature(hsm_conn, buffer, message, kr['private'], h['target_lmkscheme'].lower())
+validate_signature(hsm_conn, buffer, sig_len, signature, message, kr['public'], h['target_lmkscheme'].lower())
 
     
 
