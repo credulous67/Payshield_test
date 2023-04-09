@@ -316,14 +316,17 @@ def error_handler(error, message, response):
     sys.exit()
 
 def print_sent_rcvd(message, response):
+    tstamp=time.strftime("%Y%m%d%H%M%S")
     header = message[2:2 + MSG_HDR_LEN].decode()
     print("Header :", header)
     print("Header length :", MSG_HDR_LEN)
     # don't print ascii if msg or resp contains non printable chars
-    m=open('failed_command.sent', 'wb')
+    fname='failed_command_' + tstamp + '.sent'
+    m=open(fname, 'wb')
     m.write(message)
     m.close()
-    r=open('failed_command.rcvd', 'wb')
+    fname='failed_command_' + tstamp + '.rcvd'
+    r=open(fname, 'wb')
     r.write(response)
     r.close()
     if test_printable(message[2:].decode("ascii", "ignore")):
@@ -444,11 +447,6 @@ def generate_keys(conn, buffer, lmk_algo, lmk_scheme):
     response = conn.recv(buffer)
     str_ptr = validate_response(message, response)
     str_ptr += 8 # get us part header, response code & error code to the meat of the message
-#    tstamp=time.strftime("%Y%m%d%H%M%S")
-#    fname='EI_'+'lmk'+lmk_id+"_"+tstamp+'rcvd'
-#    r=open(fname, 'wb')
-#    r.write(response)
-#    r.close
     # find end of public key (HEX 02 03 01 00 01)
     search_EoP = response.find(b'\x02\x03\x01\x00\x01')
     print("Search_EoP:", search_EoP, hex(search_EoP))
@@ -456,14 +454,6 @@ def generate_keys(conn, buffer, lmk_algo, lmk_scheme):
         pub=response[10:search_EoP+5]
         priv=response[search_EoP+5+4:] # Extra 4 is to skip the private key length
         bits=get_bit_length(pub)
-#    fname='EI_'+'lmk'+lmk_id+"_pub"+tstamp+'.der'
-#    p=open(fname, 'wb')
-#    p.write(pub)
-#    p.close()
-#    fname='EI_'+'lmk'+lmk_id+"_priv"+tstamp+'.der'
-#    p=open(fname, 'wb')
-#    p.write(priv)
-#    p.close()
     rk=key_details['RSA']={}
     rk['public']=pub
     rk['private']=priv
@@ -710,9 +700,9 @@ def generate_signature(conn, buffer, message, privkey, lmkscheme):
         host_command = header + 'EW' + '060104'+ msg_size + message + ';99FFFF'
     else:
         host_command = header + 'EW' + '060104'+ msg_size + message + ';99' + key_size
-    tmp_msg = host_command.encode() + privkey
-    size = pack('>h', len(tmp_msg))
-    message = size + tmp_msg
+    host_command = host_command.encode() + privkey
+    size = pack('>h', len(host_command))
+    message = size + host_command
     conn.send(message)
     response = conn.recv(buffer)
     str_ptr = validate_response(message, response)
@@ -720,9 +710,12 @@ def generate_signature(conn, buffer, message, privkey, lmkscheme):
     error_code = int(response[2 + MSG_HDR_LEN + 2:][:2].decode())
     sig_len=response[str_ptr:str_ptr+4].decode()
     str_ptr += 4
-    signature=bytes.hex(response[str_ptr:])
+    signature=(response[str_ptr:])
+    kr['sig_len']=sig_len
+    kr['signature']=signature
     print("Sig len:", sig_len)
     print("Signature:", signature)
+    print("Signature: hex", bytes.hex(signature))
     return sig_len, signature
 
 def validate_signature(conn, buffer, sig_len, signature, message, pubkey, lmkscheme):
@@ -731,19 +724,16 @@ def validate_signature(conn, buffer, sig_len, signature, message, pubkey, lmksch
     if len(header) > MSG_HDR_LEN:
         sys.exit("Length of message header too long. HEADER :", header)
     msg_size = str(len(message)).zfill(4)
-    key_size = str(len(key)).zfill(4)
     print()
     print("MSG_size:", msg_size)
-    print("KEY_size:", key_size)
-    host_command = (header + 'EY' + '060104'+ sig_len).encode()
-    host_command += pubkey + ';'.decode()
+    host_command = (header + 'EY060104' + sig_len).encode() + signature + (';' + msg_size + message +';').encode()
+    host_command += pubkey
     if lmkscheme == 'keyblock':
         print('keyblock')
     else:
-        host_command = header + 'EY' + '060102'+ msg_size + message + ';99' + key_size
-    tmp_msg = host_command.encode() + privkey
-    size = pack('>h', len(tmp_msg))
-    message = size + tmp_msg
+        print('variant')
+    size = pack('>h', len(host_command))
+    message = size + host_command
     conn.send(message)
     response = conn.recv(buffer)
     str_ptr = validate_response(message, response)
