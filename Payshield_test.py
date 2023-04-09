@@ -18,7 +18,7 @@
 #    You should have received a copy of the GNU General Public License
 #    along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-import sys, argparse, socket, string, inspect, secrets, datetime, base64, time
+import sys, argparse, socket, string, inspect, secrets, datetime, base64, time, subprocess
 from ipaddress import ip_address
 from baluhn import generate # need to dnf install python3-baluhn
 from typing import Tuple
@@ -429,9 +429,9 @@ def generate_keys(conn, buffer, lmk_algo, lmk_scheme):
 # Create RSA key pair
     lmk_id=h['target_id']
     if lmk_scheme == 'keyblock':
-        host_command = header + 'EI2409602#0000'
+        host_command = header + 'EI2102402#0000'
     else:
-        host_command = header + 'EI2204802'
+        host_command = header + 'EI2102402'
     size = pack('>h', len(host_command))
     message = size + host_command.encode()
     conn.send(message)
@@ -441,20 +441,19 @@ def generate_keys(conn, buffer, lmk_algo, lmk_scheme):
     r=open(fname, 'wb')
     r.write(response)
     r.close
+    # find end of public key (HEX 02 03 01 00 01)
+    search_EoP = response.find(b'\x02\x03\x01\x00\x01')
+    if search_EoP:
+        pub=response[10:search_EoP+5]
+        priv=response[search_EoP+5+4:] # Extra 4 is to skip the private key length
+        bits=get_bit_length(pub)
     fname='EI_'+'lmk'+lmk_id+"_pub"+tstamp+'.der'
     p=open(fname, 'wb')
-    if lmk_scheme == 'keyblock':
-        search_FFFF = response.find(b'\x46\x46\x46\x46') # FFFF
-        if search_FFFF:
-            pub=response[10:search_FFFF]
-            priv=response[search_FFFF+4:]
-            bits=4096
-            p.write(pub)
-    else:
-        pub=response[10:280]
-        priv=response[283:]
-        bits=1024
-        p.write(pub)
+    p.write(pub)
+    p.close()
+    fname='EI_'+'lmk'+lmk_id+"_priv"+tstamp+'.der'
+    p=open(fname, 'wb')
+    p.write(priv)
     p.close()
     rk=key_details['RSA']={}
     rk['public']=pub
@@ -466,6 +465,9 @@ def generate_keys(conn, buffer, lmk_algo, lmk_scheme):
     if args.debug:
         print(key_details)
     return key_details
+
+def get_bit_length(pub_key):
+    return 'unknown'
 
 def generate_cards():
     card_details={}
@@ -684,6 +686,36 @@ def verify_pvv(conn, buffer, zpk, zpkkcv, pvk, pinblock, pan, pvv):
         print(bcolours.FAIL, False, bcolours.ENDC)
         return False
 
+def generate_signature(conn, buffer, message, privkey, lmkscheme):
+    header="gRSA"
+    print("\tGenerate signature for MSG=", message, ":", end=' ')
+    if len(header) > MSG_HDR_LEN:
+        sys.exit("Length of message header too long. HEADER :", header)
+    msg_size = str(len(message)).zfill(4)
+    key_size = str(len(privkey)).zfill(4)
+    key_size = bytes(str(len(privkey)).zfill(4), 'ascii')
+    print()
+    print("MSG_size:", msg_size)
+    print("KEY_size:", key_size)
+    if lmkscheme == 'keyblock':
+        host_command = header + 'EW' + '060104'+ msg_size + message + ';99FFFF' + bytes.hex(privkey)
+    else:
+        host_command = header + 'EW' + '060104'+ msg_size + message + ';99' + bytes.hex(key_size) + bytes.hex(privkey)
+    size = pack('>h', len(host_command))
+    message = size + host_command.encode()
+    conn.send(message)
+    response = conn.recv(buffer)
+    str_ptr = validate_response(message, response)
+    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+    error_code = int(response[2 + MSG_HDR_LEN + 2:][:2].decode())
+    sig_len=response[str_ptr:4].decode()
+    str_len += 4
+    signature=response[str_ptr:].decode()
+    print("Sig len:", sig_len)
+    print("Signature:", signature)
+    return sig_len, signature
+
+
 ###########################################################################################################
 # Main code starts here
 ###########################################################################################################
@@ -775,6 +807,10 @@ for card in card_details:
 
 # Perform RSA crypto
     print("RSA Crypto")
+    kr=key_details['RSA']
+    sig_len, signature=generate_signature(hsm_conn, buffer, 'Hello World!', kr['private'], h['target_lmkscheme'].lower())
+
+    
 
     
 if args.debug:
