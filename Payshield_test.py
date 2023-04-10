@@ -29,6 +29,8 @@ VERSION = "0.1"
 MSG_HDR_LEN = 4 # should match message header config in QH on HSM
 KB_DEC_TABLE="L7E852B114933025E9389968E16B8CAAB"
 V_DEC_TABLE="0097D0017F96042F"
+TEST_MESSAGE="Hello World!"
+
 
 class bcolours:
     HEADER = '\033[95m'
@@ -407,7 +409,6 @@ def generate_keys(conn, buffer, lmk_algo, lmk_scheme):
     response, error_code, str_ptr = send_to_hsm(conn, buffer, host_command)
     # find end of public key (HEX 02 03 01 00 01)
     search_EoP = response.find(b'\x02\x03\x01\x00\x01')
-    print("Search_EoP:", search_EoP, hex(search_EoP))
     if search_EoP:
         pub=response[10:search_EoP+5]
         priv=response[search_EoP+5+4:] # Extra 4 is to skip the private key length
@@ -672,6 +673,19 @@ if __name__ == '__main__':
 print("Creating collateral")
 card_details=generate_cards()
 key_details=generate_keys(hsm_conn, buffer, h['target_lmkalgorithm'].lower(), h['target_lmkscheme'].lower())
+
+# Perform hashing
+print()
+print("Hashing")
+hashes(hsm_conn, buffer, TEST_MESSAGE)
+
+# Perform RSA crypto
+print()
+print("RSA Crypto")
+kr=key_details['RSA']
+sig_len, signature=generate_signature(hsm_conn, buffer, TEST_MESSAGE, kr['private'], h['target_lmkscheme'].lower())
+validate_signature(hsm_conn, buffer, sig_len, signature, TEST_MESSAGE, kr['import_mac'], kr['import_public'], h['target_lmkscheme'].lower())
+
 for card in card_details:
     c=card_details[card]
     print()
@@ -708,23 +722,11 @@ for card in card_details:
     verify_random_pin(hsm_conn, buffer, kz2['key'], kz2['kcv'], c['pinblockZPK2'], c['PAN'], c['pinblockLMK'])
 
 # Perform PIN stuff using Visa method
-    print("PIN Crypto - Visa method")
+    print("PIN Crypto - Visa method (using random pin from above)")
     kp=key_details['VISAPVK']
     c['PVV']=generate_pvv(hsm_conn, buffer, kp['key'], kp['kcv'], c['pinblockLMK'], c['PAN'])
     verify_pvv(hsm_conn, buffer, kz1['key'], kz1['kcv'], kp['key'], c['pinblockZPK1'], c['PAN'], c['PVV'])
     verify_pvv(hsm_conn, buffer, kz2['key'], kz2['kcv'], kp['key'], c['pinblockZPK2'], c['PAN'], c['PVV'])
-
-# Perform RSA crypto
-print("RSA Crypto")
-kr=key_details['RSA']
-message="Hello World!"
-sig_len, signature=generate_signature(hsm_conn, buffer, message, kr['private'], h['target_lmkscheme'].lower())
-validate_signature(hsm_conn, buffer, sig_len, signature, message, kr['import_mac'], kr['import_public'], h['target_lmkscheme'].lower())
-
-# Perform hashing
-print("Hashing")
-hashes(hsm_conn, buffer, message)
-    
 
     
 if args.debug:
