@@ -179,13 +179,8 @@ def establish_connection(hsm_ip, hsm_port, hsm_proto):
 def get_hsm_details(conn, buffer):
     h, l=get_hsm_status(conn, buffer)
 # work out which LMK you are targetting
-    host_command = 'TARG' + 'NC' # get LMK KCV & firmware
-    size = pack('>h', len(host_command))
-    message = size + host_command.encode()
-    conn.send(message)
-    response = conn.recv(buffer)
-    str_ptr = validate_response(message, response)
-    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+    host_command = 'TARGNC'.encode() # get LMK KCV & firmware
+    response, error_code, str_ptr = send_to_hsm(conn, buffer, host_command)
     h['target_kcv']=response[str_ptr:str_ptr+6].decode() # only first 6 digits of 16 digit KCV
     target_id=999
     for i in range(h['#LMKs']):
@@ -197,16 +192,8 @@ def get_hsm_details(conn, buffer):
     return h, l
 
 def get_lmk_kcv(id, h, l, conn, buffer):
-    header = "LKCV"
-    if len(header) > MSG_HDR_LEN:
-        sys.exit("Length of message header too long. HEADER :", header)
-    host_command = header + 'NC%0' + str(id) # get LMK KCV & firmware
-    size = pack('>h', len(host_command))
-    message = size + host_command.encode()
-    conn.send(message)
-    response = conn.recv(buffer)
-    str_ptr = validate_response(message, response)
-    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+    host_command = ('lKCVNC%0' + str(id)).encode() # get LMK KCV & firmware
+    response, error_code, str_ptr = send_to_hsm(conn, buffer, host_command)
     #print("LMK details:", hsm_details['LMK'])
     l[id]['KCV']=response[str_ptr:str_ptr+6].decode() # only first 6 digits of 16 digit KCV
     str_ptr += 16 #get past KCV
@@ -217,18 +204,8 @@ def get_lmk_kcv(id, h, l, conn, buffer):
 def get_hsm_status(conn, buffer):
     h={}
     l={}
-    header = "STAT"
-    if len(header) > MSG_HDR_LEN:
-        sys.exit("Length of message header too long. HEADER :", header)
-    host_command = header + 'JK' # get instananeous HSM status
-    size = pack('>h', len(host_command))
-    message = size + host_command.encode()
-    conn.send(message)
-# decode response from JK and display HSM s/n, LMKs etc
-    # try to decode the result code contained in the reply of the payShield
-    response = conn.recv(buffer)
-    str_ptr = validate_response(message, response)
-    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+    host_command = ('STATJK').encode() # get instananeous HSM status
+    response, error_code, str_ptr = send_to_hsm(conn, buffer, host_command)
     h['hsm_serno'] = response[str_ptr:str_ptr + 12].decode()
     str_ptr += 12 # get past serial number
     h['date'] = response[str_ptr+4:str_ptr+6].decode() + '/' + response[str_ptr+2:str_ptr+4].decode() + '/20' + response[str_ptr:str_ptr+2].decode()
@@ -299,7 +276,8 @@ def validate_response(message, response):
             error_handler("Response code does not match command sent", message, response)
 
     error_code = response[2 + MSG_HDR_LEN + 2:][:2].decode()
-    if int(error_code) <= 2: # I have made an assumption here that most times <=2 is usually OK
+# the ,16 below will translate from hex to decimal for integer
+    if int(error_code, 16) <= 2: # I have made an assumption here that most times <=2 is usually OK
         if args.debug:
             print("Command sent/received:", verb_sent, "==>", verb_returned)
             print_sent_rcvd(message, response)
@@ -339,6 +317,16 @@ def print_sent_rcvd(message, response):
         print("received data (HEX) :", bytes.hex(response))
     return
 
+def send_to_hsm(conn, buffer, msg):
+    size = pack('>h', len(msg))
+    message = size + msg
+    conn.send(message)
+    response = conn.recv(buffer)
+    ptr = validate_response(message, response)
+    ptr += 8 # get us part header, response code & error code to the meat of the message
+    error_code = int(response[2 + MSG_HDR_LEN + 2:][:2].decode(), 16)
+    return response, error_code, ptr
+
 def generate_keys(conn, buffer, lmk_algo, lmk_scheme):
     key_details={}
     if lmk_scheme == 'keyblock':
@@ -352,15 +340,10 @@ def generate_keys(conn, buffer, lmk_algo, lmk_scheme):
 
 # Create ZPK #1
     if lmk_scheme == 'keyblock':
-        host_command = header + 'A00FFFS#72T2N00N00'
+        host_command = (header + 'A00FFFS#72T2N00N00').encode()
     else:
-        host_command = header + 'A00001U'
-    size = pack('>h', len(host_command))
-    message = size + host_command.encode()
-    conn.send(message)
-    response = conn.recv(buffer)
-    str_ptr = validate_response(message, response)
-    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+        host_command = (header + 'A00001U').encode()
+    response, error_code, str_ptr = send_to_hsm(conn, buffer, host_command)
     k=response[str_ptr:].decode()
     zk=key_details['ZPK1']={}
     zk['kcv']=k[-6:]
@@ -369,15 +352,10 @@ def generate_keys(conn, buffer, lmk_algo, lmk_scheme):
 
 # Create ZPK #2
     if lmk_scheme == 'keyblock':
-        host_command = header + 'A00FFFS#72T2N00E00'
+        host_command = (header + 'A00FFFS#72T2N00E00').encode()
     else:
-        host_command = header + 'A00001U'
-    size = pack('>h', len(host_command))
-    message = size + host_command.encode()
-    conn.send(message)
-    response = conn.recv(buffer)
-    str_ptr = validate_response(message, response)
-    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+        host_command = (header + 'A00001U').encode()
+    response, error_code, str_ptr = send_to_hsm(conn, buffer, host_command)
     k=response[str_ptr:].decode()
     zk=key_details['ZPK2']={}
     zk['kcv']=k[-6:]
@@ -386,15 +364,10 @@ def generate_keys(conn, buffer, lmk_algo, lmk_scheme):
 
 # Create PVK (IBM3624)
     if lmk_scheme == 'keyblock':
-        host_command = header + 'A00FFFS#V1T2N00E00'
+        host_command = (header + 'A00FFFS#V1T2N00E00').encode()
     else:
-        host_command = header + 'A00002U'
-    size = pack('>h', len(host_command))
-    message = size + host_command.encode()
-    conn.send(message)
-    response = conn.recv(buffer)
-    str_ptr = validate_response(message, response)
-    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+        host_command = (header + 'A00002U').encode()
+    response, error_code, str_ptr = send_to_hsm(conn, buffer, host_command)
     k=response[str_ptr:].decode()
     pk=key_details['IBMPVK']={}
     pk['kcv']=k[-6:]
@@ -403,15 +376,10 @@ def generate_keys(conn, buffer, lmk_algo, lmk_scheme):
 
 # Create PVK (Visa PVV)
     if lmk_scheme == 'keyblock':
-        host_command = header + 'A00FFFS#V2T2N00E00'
+        host_command = (header + 'A00FFFS#V2T2N00E00').encode()
     else:
-        host_command = header + 'A00002U'
-    size = pack('>h', len(host_command))
-    message = size + host_command.encode()
-    conn.send(message)
-    response = conn.recv(buffer)
-    str_ptr = validate_response(message, response)
-    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+        host_command = (header + 'A00002U').encode()
+    response, error_code, str_ptr = send_to_hsm(conn, buffer, host_command)
     k=response[str_ptr:].decode()
     pk=key_details['VISAPVK']={}
     pk['kcv']=k[-6:]
@@ -420,15 +388,10 @@ def generate_keys(conn, buffer, lmk_algo, lmk_scheme):
 
 # Create CVK
     if lmk_scheme == 'keyblock':
-        host_command = header + 'A00FFFS#C0T2N00E00'
+        host_command = (header + 'A00FFFS#C0T2N00E00').encode()
     else:
-        host_command = header + 'A00402U'
-    size = pack('>h', len(host_command))
-    message = size + host_command.encode()
-    conn.send(message)
-    response = conn.recv(buffer)
-    str_ptr = validate_response(message, response)
-    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+        host_command = (header + 'A00402U').encode()
+    response, error_code, str_ptr = send_to_hsm(conn, buffer, host_command)
     k=response[str_ptr:].decode()
     ck=key_details['CVK1']={}
     ck['kcv']=k[-6:]
@@ -438,15 +401,10 @@ def generate_keys(conn, buffer, lmk_algo, lmk_scheme):
 # Create RSA key pair
     lmk_id=h['target_id']
     if lmk_scheme == 'keyblock':
-        host_command = header + 'EI2409602#0000'
+        host_command = (header + 'EI2409602#0000').encode()
     else:
-        host_command = header + 'EI2204802'
-    size = pack('>h', len(host_command))
-    message = size + host_command.encode()
-    conn.send(message)
-    response = conn.recv(buffer)
-    str_ptr = validate_response(message, response)
-    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+        host_command = (header + 'EI2204802').encode()
+    response, error_code, str_ptr = send_to_hsm(conn, buffer, host_command)
     # find end of public key (HEX 02 03 01 00 01)
     search_EoP = response.find(b'\x02\x03\x01\x00\x01')
     print("Search_EoP:", search_EoP, hex(search_EoP))
@@ -458,8 +416,22 @@ def generate_keys(conn, buffer, lmk_algo, lmk_scheme):
     rk['public']=pub
     rk['private']=priv
     rk['bits']=bits
-    print("\tRSApub-",rk['bits'],"  (HEX):", bytes.hex(rk['public']))
-    print("\tRSApriv-",rk['bits']," (HEX):", bytes.hex(rk['private']))
+    print("\tRSA keypair generated")
+
+# Import public key
+    host_command = (header + 'EO02').encode() + pub
+    if lmk_scheme == 'keyblock':
+        host_command += '~#N00N00'.encode()
+    response, error_code, str_ptr = send_to_hsm(conn, buffer, host_command)
+    if lmk_scheme == 'variant':
+        import_mac=response[str_ptr:str_ptr+4]
+        str_ptr += 4
+    else:
+        import_mac=b''
+    import_public=response[str_ptr:]
+    rk['import_mac']=import_mac
+    rk['import_public']=import_public
+    print("\tImported RSA public key")
 
     if args.debug:
         print(key_details)
@@ -507,35 +479,19 @@ def generate_cards():
     return card_details
 
 def derive_IBM_pin(conn, buffer, pvk, pan):
-    header = "dPIN"
     encdec=key_details['DEC_TABLE']
     print("\tDeriving natural IBM PIN (EE)", end=' ')
-    if len(header) > MSG_HDR_LEN:
-        sys.exit("Length of message header too long. HEADER :", header)
-    host_command = header + 'EE' + pvk + '0000FFFFFFFF' + '04' + pan[-13:-1] + encdec + "P1234567890ABCDEF"
-    size = pack('>h', len(host_command))
-    message = size + host_command.encode()
-    conn.send(message)
-    response = conn.recv(buffer)
-    str_ptr = validate_response(message, response)
-    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+    host_command = ('dPINEE' + pvk + '0000FFFFFFFF' + '04' + pan[-13:-1] + encdec + "P1234567890ABCDEF").encode()
+    response, error_code, str_ptr = send_to_hsm(conn, buffer, host_command)
     pinblock=response[str_ptr:].decode()
     print("PINblock:", pinblock)
     return pinblock
 
 def verify_IBM_pin(conn, buffer, zpk, zpkkcv, pvk, pinblock, pan):
-    header = "vPIN"
     encdec=key_details['DEC_TABLE']
-    print("\tVerifying IBM PIN (EA) under ZPK(", zpkkcv, ")", end=' ')
-    if len(header) > MSG_HDR_LEN:
-        sys.exit("Length of message header too long. HEADER :", header)
-    host_command = header + 'EA' + zpk + pvk + '12' + pinblock + '01' + '04' + pan[-13:-1] + encdec + "P1234567890ABCDEF" + '0000FFFFFFFF'
-    size = pack('>h', len(host_command))
-    message = size + host_command.encode()
-    conn.send(message)
-    response = conn.recv(buffer)
-    str_ptr = validate_response(message, response)
-    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+    print("\tVerifying IBM PIN (EA)", end=' ')
+    host_command = ('vPINEA' + zpk + pvk + '12' + pinblock + '01' + '04' + pan[-13:-1] + encdec + "P1234567890ABCDEF" + '0000FFFFFFFF').encode()
+    response, error_code, str_ptr = send_to_hsm(conn, buffer, host_command)
     error_code = int(response[2 + MSG_HDR_LEN + 2:][:2].decode())
     if error_code == 0 or error_code == 2: # 02 because double length PVK
         print(bcolours.OKGREEN, True, bcolours.ENDC)
@@ -545,34 +501,18 @@ def verify_IBM_pin(conn, buffer, zpk, zpkkcv, pvk, pinblock, pan):
         return False
 
 def generate_random_pin(conn, buffer, pan):
-    header = "gPIN"
     print("\tGenerating random PIN (JA)", end=' ')
-    if len(header) > MSG_HDR_LEN:
-        sys.exit("Length of message header too long. HEADER :", header)
-    host_command = header + 'JA' + pan[-13:-1] + '04'
-    size = pack('>h', len(host_command))
-    message = size + host_command.encode()
-    conn.send(message)
-    response = conn.recv(buffer)
-    str_ptr = validate_response(message, response)
-    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+    host_command = ('gPINJA' + pan[-13:-1] + '04').encode()
+    response, error_code, str_ptr = send_to_hsm(conn, buffer, host_command)
     pinblock=response[str_ptr:].decode()
     print("PINblock:", pinblock)
     return pinblock
     
 def verify_random_pin(conn, buffer, zpk, zpkkcv, pinblock, pan, lmkpin):
-    header = "vPIN"
     encdec=key_details['DEC_TABLE']
     print("\tVerifying random PIN (BE) under ZPK(", zpkkcv, ")", end=' ')
-    if len(header) > MSG_HDR_LEN:
-        sys.exit("Length of message header too long. HEADER :", header)
-    host_command = header + 'BE' + zpk + pinblock + '01' + pan[-13:-1] + lmkpin
-    size = pack('>h', len(host_command))
-    message = size + host_command.encode()
-    conn.send(message)
-    response = conn.recv(buffer)
-    str_ptr = validate_response(message, response)
-    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+    host_command = ('vPINBE' + zpk + pinblock + '01' + pan[-13:-1] + lmkpin).encode()
+    response, error_code, str_ptr = send_to_hsm(conn, buffer, host_command)
     error_code = int(response[2 + MSG_HDR_LEN + 2:][:2].decode())
     if error_code == 0 or error_code == 2: # 02 because double length PVK
         print(bcolours.OKGREEN, True, bcolours.ENDC)
@@ -582,34 +522,17 @@ def verify_random_pin(conn, buffer, zpk, zpkkcv, pinblock, pan, lmkpin):
         return False
 
 def generate_cvv(conn, buffer, cvk, pan, expiry_date, service_code):
-    header="gCVV"
     print("\tGenerating CVV (CW)", end=' ')
-    if len(header) > MSG_HDR_LEN:
-        sys.exit("Length of message header too long. HEADER :", header)
-    host_command = header + 'CW' + cvk + pan + ';' + expiry_date + service_code
-    size = pack('>h', len(host_command))
-    message = size + host_command.encode()
-    conn.send(message)
-    response = conn.recv(buffer)
-    str_ptr = validate_response(message, response)
-    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+    host_command = ('gCVVCW' + cvk + pan + ';' + expiry_date + service_code).encode()
+    response, error_code, str_ptr = send_to_hsm(conn, buffer, host_command)
     cvv=response[str_ptr:].decode()
     print("CVV:",cvv)
     return cvv
 
 def verify_cvv(conn, buffer, cvv, cvk, pan, expiry_date, service_code):
-    header="vCVV"
     print("\tValidating CVV (CY):", cvv, end=' ')
-    if len(header) > MSG_HDR_LEN:
-        sys.exit("Length of message header too long. HEADER :", header)
-    host_command = header + 'CY' + cvk + cvv + pan + ';' + expiry_date + service_code
-    size = pack('>h', len(host_command))
-    message = size + host_command.encode()
-    conn.send(message)
-    response = conn.recv(buffer)
-    str_ptr = validate_response(message, response)
-    str_ptr += 8 # get us part header, response code & error code to the meat of the message
-    error_code = int(response[2 + MSG_HDR_LEN + 2:][:2].decode())
+    host_command = ('vCVVCY' + cvk + cvv + pan + ';' + expiry_date + service_code).encode()
+    response, error_code, str_ptr = send_to_hsm(conn, buffer, host_command)
     if error_code == 0:
         print(bcolours.OKGREEN, True, bcolours.ENDC)
         return True
@@ -618,67 +541,34 @@ def verify_cvv(conn, buffer, cvv, cvk, pan, expiry_date, service_code):
         return False
 
 def translate_pinblock_lmk_zpk(conn, buffer, zpk, kcv, pan, pinblock, lmk_scheme):
-    header="xL2Z"
     print("\tTranslating pinblock (JG) from LMK to ZPK(", kcv,") ISO format 0 / Thales format 1", end=' ')
-    if len(header) > MSG_HDR_LEN:
-        sys.exit("Length of message header too long. HEADER :", header)
-    host_command = header + 'JG' + zpk + '01' + pan[-13:-1] + pinblock
-    size = pack('>h', len(host_command))
-    message = size + host_command.encode()
-    conn.send(message)
-    response = conn.recv(buffer)
-    str_ptr = validate_response(message, response)
-    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+    host_command = ('xL2ZJG' + zpk + '01' + pan[-13:-1] + pinblock).encode()
+    response, error_code, str_ptr = send_to_hsm(conn, buffer, host_command)
     pinblock=response[str_ptr:].decode()
     print("PINblock:", pinblock)
     return pinblock
 
 def translate_pinblock_zpk_zpk(conn, buffer, zpk1, kcv1, zpk2, kcv2, pan, pinblock, lmk_scheme):
-    header="xZ2Z"
     print("\tTranslating pinblock (CC) from ZPK(", kcv1,") to ZPK(", kcv2, ")", end=' ')
-    if len(header) > MSG_HDR_LEN:
-        sys.exit("Length of message header too long. HEADER :", header)
-    host_command = header + 'CC' + zpk1 + zpk2 + '12' + pinblock + '01' + '01' + pan[-13:-1]
-    size = pack('>h', len(host_command))
-    message = size + host_command.encode()
-    conn.send(message)
-    response = conn.recv(buffer)
-    str_ptr = validate_response(message, response)
-    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+    host_command = ('xZ2ZCC' + zpk1 + zpk2 + '12' + pinblock + '01' + '01' + pan[-13:-1]).encode()
+    response, error_code, str_ptr = send_to_hsm(conn, buffer, host_command)
     str_ptr += 2 # get past PIN length
     pinblock=response[str_ptr:-2].decode() # omit last 2 chars (dest pin block format
     print("PINblock:", pinblock)
     return pinblock
 
 def generate_pvv(conn, buffer, pvk, pvkkcv, pinblock, pan):
-    header="xZ2Z"
     print("\tGenerating PVV (DG) using PVK(", pvkkcv, ")", end=' ')
-    if len(header) > MSG_HDR_LEN:
-        sys.exit("Length of message header too long. HEADER :", header)
-    host_command = header + 'DG' + pvk + pinblock + pan[-13:-1] + '0' # 0 at end is PVKI (0-6)
-    size = pack('>h', len(host_command))
-    message = size + host_command.encode()
-    conn.send(message)
-    response = conn.recv(buffer)
-    str_ptr = validate_response(message, response)
-    str_ptr += 8 # get us part header, response code & error code to the meat of the message
+    host_command = ('xZ2ZDG' + pvk + pinblock + pan[-13:-1] + '0').encode() # 0 at end is PVKI (0-6)
+    response, error_code, str_ptr = send_to_hsm(conn, buffer, host_command)
     pvv=response[str_ptr:].decode()
     print("PVV:", pvv)
     return pvv
 
 def verify_pvv(conn, buffer, zpk, zpkkcv, pvk, pinblock, pan, pvv):
-    header="vPVV"
     print("\tValidating PVV (EC) from ZPK(", zpkkcv, "):", pvv, end=' ')
-    if len(header) > MSG_HDR_LEN:
-        sys.exit("Length of message header too long. HEADER :", header)
-    host_command = header + 'EC' + zpk + pvk + pinblock + '01' + pan[-13:-1] + '0' + pvv
-    size = pack('>h', len(host_command))
-    message = size + host_command.encode()
-    conn.send(message)
-    response = conn.recv(buffer)
-    str_ptr = validate_response(message, response)
-    str_ptr += 8 # get us part header, response code & error code to the meat of the message
-    error_code = int(response[2 + MSG_HDR_LEN + 2:][:2].decode())
+    host_command = ('vPVVEC' + zpk + pvk + pinblock + '01' + pan[-13:-1] + '0' + pvv).encode()
+    response, error_code, str_ptr = send_to_hsm(conn, buffer, host_command)
     if error_code == 0:
         print(bcolours.OKGREEN, True, bcolours.ENDC)
         return True
@@ -687,61 +577,53 @@ def verify_pvv(conn, buffer, zpk, zpkkcv, pvk, pinblock, pan, pvv):
         return False
 
 def generate_signature(conn, buffer, message, privkey, lmkscheme):
-    header="gRSA"
     print("\tGenerate signature for MSG=", message, ":", end=' ')
-    if len(header) > MSG_HDR_LEN:
-        sys.exit("Length of message header too long. HEADER :", header)
     msg_size = str(len(message)).zfill(4)
     key_size = str(len(privkey)).zfill(4)
-    print()
-    print("MSG_size:", msg_size)
-    print("KEY_size:", key_size)
     if lmkscheme == 'keyblock':
-        host_command = header + 'EW' + '060104'+ msg_size + message + ';99FFFF'
+        host_command = 'gRSAEW' + '060104'+ msg_size + message + ';99FFFF'
     else:
-        host_command = header + 'EW' + '060104'+ msg_size + message + ';99' + key_size
+        host_command = 'gRSAEW' + '060104'+ msg_size + message + ';99' + key_size
     host_command = host_command.encode() + privkey
-    size = pack('>h', len(host_command))
-    message = size + host_command
-    conn.send(message)
-    response = conn.recv(buffer)
-    str_ptr = validate_response(message, response)
-    str_ptr += 8 # get us part header, response code & error code to the meat of the message
-    error_code = int(response[2 + MSG_HDR_LEN + 2:][:2].decode())
+    response, error_code, str_ptr = send_to_hsm(conn, buffer, host_command)
     sig_len=response[str_ptr:str_ptr+4].decode()
     str_ptr += 4
     signature=(response[str_ptr:])
     kr['sig_len']=sig_len
     kr['signature']=signature
-    print("Sig len:", sig_len)
-    print("Signature:", signature)
-    print("Signature: hex", bytes.hex(signature))
+    print("Signature len:", sig_len, end=' ')
+    print("Signature: hex", bytes.hex(signature[:3]), '...', bytes.hex(signature[-3:]))
     return sig_len, signature
 
-def validate_signature(conn, buffer, sig_len, signature, message, pubkey, lmkscheme):
-    header="vRSA"
+def validate_signature(conn, buffer, sig_len, signature, message, mac, pubkey, lmkscheme):
     print("\tvalidate signature for MSG=", message, ":", end=' ')
-    if len(header) > MSG_HDR_LEN:
-        sys.exit("Length of message header too long. HEADER :", header)
     msg_size = str(len(message)).zfill(4)
-    print()
-    print("MSG_size:", msg_size)
-    host_command = (header + 'EY060104' + sig_len).encode() + signature + (';' + msg_size + message +';').encode()
-    host_command += pubkey
+    host_command = ('vRSAEY060104' + sig_len).encode() + signature + (';' + msg_size + message +';').encode()
     if lmkscheme == 'keyblock':
-        print('keyblock')
+        host_command += pubkey
     else:
-        print('variant')
-    size = pack('>h', len(host_command))
-    message = size + host_command
-    conn.send(message)
-    response = conn.recv(buffer)
-    str_ptr = validate_response(message, response)
-    str_ptr += 8 # get us part header, response code & error code to the meat of the message
-    error_code = int(response[2 + MSG_HDR_LEN + 2:][:2].decode())
+        host_command += mac + pubkey
+    response, error_code, str_ptr = send_to_hsm(conn, buffer, host_command)
     sig_len=response[str_ptr:str_ptr+4].decode()
     str_ptr += 4
+    if error_code == 0:
+        print("Signature validated")
     return 
+
+def hashes(conn, buffer, msg):
+    msg_size = str(len(msg)).zfill(5)
+    hashlist=['SHA-1  ', 'MD5    ', 'MDC-2  ', '', 'SHA-224', 'SHA-256', 'SHA-384', 'SHA-512']
+    for i in range(1,9):
+        j=str(i).zfill(2)
+        if i == 4:
+            continue
+        print("\tHashing MSG=", msg, "with", hashlist[i-1], ":", end=' ')
+        host_command = ('HASHGM' + j + msg_size + msg).encode()
+        response, error_code, str_ptr = send_to_hsm(conn, buffer, host_command)
+        if error_code == 0:
+            hash=response[str_ptr:]
+            print( bytes.hex(hash))
+    return
 
 ###########################################################################################################
 # Main code starts here
@@ -837,8 +719,11 @@ print("RSA Crypto")
 kr=key_details['RSA']
 message="Hello World!"
 sig_len, signature=generate_signature(hsm_conn, buffer, message, kr['private'], h['target_lmkscheme'].lower())
-validate_signature(hsm_conn, buffer, sig_len, signature, message, kr['public'], h['target_lmkscheme'].lower())
+validate_signature(hsm_conn, buffer, sig_len, signature, message, kr['import_mac'], kr['import_public'], h['target_lmkscheme'].lower())
 
+# Perform hashing
+print("Hashing")
+hashes(hsm_conn, buffer, message)
     
 
     
