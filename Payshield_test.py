@@ -168,7 +168,7 @@ def establish_connection(hsm_ip, hsm_port, hsm_proto):
         buffer = 4096
         if hsm_proto == "tcp":
             connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            connection.settimeout(120)
+            connection.settimeout(args.timeout)
             connection.connect((str(hsm_ip), int(hsm_port)))
     except TimeoutError as e:
         print("Unexpected error, connection",e)
@@ -634,6 +634,7 @@ parser = argparse.ArgumentParser(prog='Payshied_test.py')
 parser.add_argument("--hsm", help="IP address of HSM to be targetted", type=ip_address)
 parser.add_argument("--port", help="port to target HSM on (default: 1500)")
 parser.add_argument("--proto", help="Protocol to use to connect to HSM, can be tcp, udp or tls (default=tcp)", default="tcp", choices=["tcp", "udp", "tls"], type=str.lower)
+parser.add_argument("--timeout", help="Set connection timeout to HSM in seconds (default: 120)", type=int, default=120)
 parser.add_argument("--debug", help="Enable debugging to see HSM traces", action='store_true')
 args = parser.parse_args()
 
