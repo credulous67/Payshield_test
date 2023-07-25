@@ -331,7 +331,7 @@ def send_to_hsm(conn, buffer, msg):
 
 def generate_keys(conn, buffer, lmk_algo, lmk_scheme):
     key_details={}
-    if lmk_scheme == 'keyblock':
+    if lmk_scheme == 'Keyblock':
         key_details['DEC_TABLE']=KB_DEC_TABLE
     else:
         key_details['DEC_TABLE']=V_DEC_TABLE
@@ -341,7 +341,7 @@ def generate_keys(conn, buffer, lmk_algo, lmk_scheme):
         sys.exit("Length of message header too long. HEADER :", header)
 
 # Create ZPK #1
-    if lmk_scheme == 'keyblock':
+    if lmk_scheme == 'Keyblock':
         host_command = (header + 'A00FFFS#72T2N00N00').encode()
     else:
         host_command = (header + 'A00001U').encode()
@@ -353,7 +353,7 @@ def generate_keys(conn, buffer, lmk_algo, lmk_scheme):
     print("\tZPK#1:   ", zk['key'], "KCV:", zk['kcv'])
 
 # Create ZPK #2
-    if lmk_scheme == 'keyblock':
+    if lmk_scheme == 'Keyblock':
         host_command = (header + 'A00FFFS#72T2N00E00').encode()
     else:
         host_command = (header + 'A00001U').encode()
@@ -365,7 +365,7 @@ def generate_keys(conn, buffer, lmk_algo, lmk_scheme):
     print("\tZPK#2:   ", zk['key'], "KCV:", zk['kcv'])
 
 # Create PVK (IBM3624)
-    if lmk_scheme == 'keyblock':
+    if lmk_scheme == 'Keyblock':
         host_command = (header + 'A00FFFS#V1T2N00E00').encode()
     else:
         host_command = (header + 'A00002U').encode()
@@ -377,7 +377,7 @@ def generate_keys(conn, buffer, lmk_algo, lmk_scheme):
     print("\tIBM PVK: ", pk['key'], "KCV:", pk['kcv'])
 
 # Create PVK (Visa PVV)
-    if lmk_scheme == 'keyblock':
+    if lmk_scheme == 'Keyblock':
         host_command = (header + 'A00FFFS#V2T2N00E00').encode()
     else:
         host_command = (header + 'A00002U').encode()
@@ -389,7 +389,7 @@ def generate_keys(conn, buffer, lmk_algo, lmk_scheme):
     print("\tVisa PVK:", pk['key'], "KCV:", pk['kcv'])
 
 # Create CVK
-    if lmk_scheme == 'keyblock':
+    if lmk_scheme == 'Keyblock':
         host_command = (header + 'A00FFFS#C0T2N00E00').encode()
     else:
         host_command = (header + 'A00402U').encode()
@@ -402,10 +402,12 @@ def generate_keys(conn, buffer, lmk_algo, lmk_scheme):
 
 # Create RSA key pair
     lmk_id=h['target_id']
-    if lmk_scheme == 'keyblock':
-        host_command = (header + 'EI2409602#0000').encode()
+    if lmk_algo.startswith('AES'):
+        host_command = (header + 'EI2409602').encode()
     else:
         host_command = (header + 'EI2204802').encode()
+    if lmk_scheme == 'Keyblock':
+        host_command += '#0000'.encode()
     response, error_code, str_ptr = send_to_hsm(conn, buffer, host_command)
     # find end of public key (HEX 02 03 01 00 01)
     search_EoP = response.find(b'\x02\x03\x01\x00\x01')
@@ -421,10 +423,10 @@ def generate_keys(conn, buffer, lmk_algo, lmk_scheme):
 
 # Import public key
     host_command = (header + 'EO02').encode() + pub
-    if lmk_scheme == 'keyblock':
+    if lmk_scheme == 'Keyblock':
         host_command += '~#N00N00'.encode()
     response, error_code, str_ptr = send_to_hsm(conn, buffer, host_command)
-    if lmk_scheme == 'variant':
+    if lmk_scheme == 'Variant':
         import_mac=response[str_ptr:str_ptr+4]
         str_ptr += 4
     else:
@@ -673,7 +675,7 @@ if __name__ == '__main__':
         sys.exit()
 print("Creating collateral")
 card_details=generate_cards()
-key_details=generate_keys(hsm_conn, buffer, h['target_lmkalgorithm'].lower(), h['target_lmkscheme'].lower())
+key_details=generate_keys(hsm_conn, buffer, h['target_lmkalgorithm'], h['target_lmkscheme'])
 
 # Perform hashing
 print()
