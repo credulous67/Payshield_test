@@ -348,8 +348,8 @@ def generate_keys(conn, buffer, lmk_algo, lmk_scheme):
     response, error_code, str_ptr = send_to_hsm(conn, buffer, host_command)
     k=response[str_ptr:].decode()
     zk=key_details['ZPK1']={}
-    zk['kcv']=k[-6:]
-    zk['key']=k[:-6]
+    zk['kcv']=k[-6:].upper()
+    zk['key']=k[:-6].upper()
     print("\tZPK#1:   ", zk['key'], "KCV:", zk['kcv'])
 
 # Create ZPK #2
@@ -360,8 +360,8 @@ def generate_keys(conn, buffer, lmk_algo, lmk_scheme):
     response, error_code, str_ptr = send_to_hsm(conn, buffer, host_command)
     k=response[str_ptr:].decode()
     zk=key_details['ZPK2']={}
-    zk['kcv']=k[-6:]
-    zk['key']=k[:-6]
+    zk['kcv']=k[-6:].upper()
+    zk['key']=k[:-6].upper()
     print("\tZPK#2:   ", zk['key'], "KCV:", zk['kcv'])
 
 # Create PVK (IBM3624)
@@ -372,8 +372,8 @@ def generate_keys(conn, buffer, lmk_algo, lmk_scheme):
     response, error_code, str_ptr = send_to_hsm(conn, buffer, host_command)
     k=response[str_ptr:].decode()
     pk=key_details['IBMPVK']={}
-    pk['kcv']=k[-6:]
-    pk['key']=k[:-6]
+    pk['kcv']=k[-6:].upper()
+    pk['key']=k[:-6].upper()
     print("\tIBM PVK: ", pk['key'], "KCV:", pk['kcv'])
 
 # Create PVK (Visa PVV)
@@ -384,8 +384,8 @@ def generate_keys(conn, buffer, lmk_algo, lmk_scheme):
     response, error_code, str_ptr = send_to_hsm(conn, buffer, host_command)
     k=response[str_ptr:].decode()
     pk=key_details['VISAPVK']={}
-    pk['kcv']=k[-6:]
-    pk['key']=k[:-6]
+    pk['kcv']=k[-6:].upper()
+    pk['key']=k[:-6].upper()
     print("\tVisa PVK:", pk['key'], "KCV:", pk['kcv'])
 
 # Create CVK
@@ -396,8 +396,8 @@ def generate_keys(conn, buffer, lmk_algo, lmk_scheme):
     response, error_code, str_ptr = send_to_hsm(conn, buffer, host_command)
     k=response[str_ptr:].decode()
     ck=key_details['CVK1']={}
-    ck['kcv']=k[-6:]
-    ck['key']=k[:-6]
+    ck['kcv']=k[-6:].upper()
+    ck['key']=k[:-6].upper()
     print("\tCVK:     ", ck['key'], "KCV:", ck['kcv'])
 
 # Create RSA key pair
@@ -462,7 +462,8 @@ def generate_cards():
     c=card_details['mastercard']
     c['PAN']=card
     c['expiry']=exp_date
-    print("\tPAN:", c['PAN'], "EXP:", c['expiry'])
+    c['service_code']='000'
+    print("\tPAN:", c['PAN'], "EXP:", c['expiry'], "Service code:", c['service_code'])
 
 # Create test Visa
     e = random.randint(0,55)
@@ -475,23 +476,22 @@ def generate_cards():
     c=card_details['visa']
     c['PAN']=card
     c['expiry']=exp_date
-    print("\tPAN:", c['PAN'], "EXP:", c['expiry'])
+    c['service_code']='000'
+    print("\tPAN:", c['PAN'], "EXP:", c['expiry'], "Service code:", c['service_code'])
 
     if args.debug:
         print(card_details)
     return card_details
 
-def derive_IBM_pin(conn, buffer, pvk, pan):
-    encdec=key_details['DEC_TABLE']
+def derive_IBM_pin(conn, buffer, pvk, pan, encdec):
     print("\tDeriving natural IBM PIN (EE)", end=' ')
     host_command = ('dPINEE' + pvk + '0000FFFFFFFF' + '04' + pan[-13:-1] + encdec + "P1234567890ABCDEF").encode()
     response, error_code, str_ptr = send_to_hsm(conn, buffer, host_command)
     pinblock=response[str_ptr:].decode()
-    print("PINblock:", pinblock)
+    print("PINblock(lmk):", pinblock)
     return pinblock
 
-def verify_IBM_pin(conn, buffer, zpk, zpkkcv, pvk, pinblock, pan):
-    encdec=key_details['DEC_TABLE']
+def verify_IBM_pin(conn, buffer, zpk, zpkkcv, pvk, pinblock, pan, encdec):
     print("\tVerifying IBM PIN (EA)", end=' ')
     host_command = ('vPINEA' + zpk + pvk + '12' + pinblock + '01' + '04' + pan[-13:-1] + encdec + "P1234567890ABCDEF" + '0000FFFFFFFF').encode()
     response, error_code, str_ptr = send_to_hsm(conn, buffer, host_command)
@@ -511,8 +511,7 @@ def generate_random_pin(conn, buffer, pan):
     print("PINblock:", pinblock)
     return pinblock
     
-def verify_random_pin(conn, buffer, zpk, zpkkcv, pinblock, pan, lmkpin):
-    encdec=key_details['DEC_TABLE']
+def verify_random_pin(conn, buffer, zpk, zpkkcv, pinblock, pan, lmkpin, encdec):
     print("\tVerifying random PIN (BE) under ZPK(", zpkkcv, ")", end=' ')
     host_command = ('vPINBE' + zpk + pinblock + '01' + pan[-13:-1] + lmkpin).encode()
     response, error_code, str_ptr = send_to_hsm(conn, buffer, host_command)
@@ -524,7 +523,7 @@ def verify_random_pin(conn, buffer, zpk, zpkkcv, pinblock, pan, lmkpin):
         print(bcolours.FAIL, False, bcolours.ENDC)
         return False
 
-def generate_cvv(conn, buffer, cvk, pan, expiry_date, service_code):
+def generate_cvv(conn, buffer, cvk, pan, service_code, expiry_date):
     print("\tGenerating CVV (CW)", end=' ')
     host_command = ('gCVVCW' + cvk + pan + ';' + expiry_date + service_code).encode()
     response, error_code, str_ptr = send_to_hsm(conn, buffer, host_command)
@@ -532,7 +531,7 @@ def generate_cvv(conn, buffer, cvk, pan, expiry_date, service_code):
     print("CVV:",cvv)
     return cvv
 
-def verify_cvv(conn, buffer, cvv, cvk, pan, expiry_date, service_code):
+def verify_cvv(conn, buffer, cvv, cvk, pan, service_code, expiry_date):
     print("\tValidating CVV (CY):", cvv, end=' ')
     host_command = ('vCVVCY' + cvk + cvv + pan + ';' + expiry_date + service_code).encode()
     response, error_code, str_ptr = send_to_hsm(conn, buffer, host_command)
@@ -579,8 +578,9 @@ def verify_pvv(conn, buffer, zpk, zpkkcv, pvk, pinblock, pan, pvv):
         print(bcolours.FAIL, False, bcolours.ENDC)
         return False
 
-def generate_signature(conn, buffer, message, privkey, lmkscheme):
+def generate_signature(conn, buffer, message, kr, lmkscheme):
     print("\tGenerate signature for MSG=", message, ":", end=' ')
+    privkey=kr['private']
     msg_size = str(len(message)).zfill(4)
     key_size = str(len(privkey)).zfill(4)
     if lmkscheme == 'keyblock':
@@ -598,8 +598,10 @@ def generate_signature(conn, buffer, message, privkey, lmkscheme):
     print("Signature: hex", bytes.hex(signature[:3]), '...', bytes.hex(signature[-3:]))
     return sig_len, signature
 
-def validate_signature(conn, buffer, sig_len, signature, message, mac, pubkey, lmkscheme):
+def validate_signature(conn, buffer, sig_len, signature, message, kr, lmkscheme):
     print("\tvalidate signature for MSG=", message, ":", end=' ')
+    mac=kr['import_mac']
+    pubkey=kr['import_public']
     msg_size = str(len(message)).zfill(4)
     host_command = ('vRSAEY060104' + sig_len).encode() + signature + (';' + msg_size + message +';').encode()
     if lmkscheme == 'keyblock':
@@ -628,6 +630,98 @@ def hashes(conn, buffer, msg):
             print( bytes.hex(hash))
     return
 
+def run_default_tests(conn, buffer):
+    print("Creating collateral")
+    cards=generate_cards()
+    if args.debug:
+        print("#####################################################################################")
+        print("                                    card details")
+        print("#####################################################################################")
+        print(cards)
+    keys=generate_keys(conn, buffer, h['target_lmkalgorithm'], h['target_lmkscheme'])
+    if args.debug:
+        print("#####################################################################################")
+        print("                                    key details")
+        print("#####################################################################################")
+        print(keys)
+    
+    # Perform hashing
+    print()
+    print("Hashing")
+    hashes(conn, buffer, TEST_MESSAGE)
+    
+    # Perform RSA crypto
+    print()
+    print("RSA Crypto")
+    kr=keys['RSA']
+    sig_len, signature=generate_signature(conn, buffer, TEST_MESSAGE, kr, h['target_lmkscheme'].lower())
+    validate_signature(conn, buffer, sig_len, signature, TEST_MESSAGE, kr, h['target_lmkscheme'].lower())
+    
+    for card in cards:
+        c=cards[card]
+        print()
+        print("Performing crypto for card", c)
+    
+    # Perform CVV stuff
+        print("CVV Crypto")
+        kc=keys['CVK1']
+        c['cvv']=generate_cvv(conn, buffer, kc['key'], c['PAN'], c['service_code'], c['expiry'])
+        verify_cvv(conn, buffer, c['cvv'], kc['key'], c['PAN'], c['service_code'], c['expiry'])
+        random = secrets.SystemRandom()
+        rand_cvv = str(random.randint(0,999)).zfill(3)
+        verify_cvv(conn, buffer, rand_cvv, kc['key'], c['PAN'], c['service_code'], c['expiry'])
+    
+    # Perform PIN stuff using IBM method
+        print("PIN Crypto - IBM method")
+        kp=keys['IBMPVK']
+        c['IBMpinblockLMK']=derive_IBM_pin(conn, buffer, kp['key'], c['PAN'], keys['DEC_TABLE'])
+        kz1=keys['ZPK1']
+        kz2=keys['ZPK2']
+        c['IBMpinblockZPK1']=translate_pinblock_lmk_zpk(conn, buffer, kz1['key'], kz1['kcv'], c['PAN'], c['IBMpinblockLMK'], h['target_lmkscheme'])
+        c['IBMpinblockZPK2']=translate_pinblock_zpk_zpk(conn, buffer, kz1['key'], kz1['kcv'], kz2['key'], kz2['kcv'], c['PAN'], c['IBMpinblockZPK1'], h['target_lmkscheme'])
+        verify_IBM_pin(conn, buffer, kz1['key'], kz1['kcv'], kp['key'], c['IBMpinblockZPK1'], c['PAN'], keys['DEC_TABLE'])
+        verify_IBM_pin(conn, buffer, kz2['key'], kz2['kcv'], kp['key'], c['IBMpinblockZPK2'], c['PAN'], keys['DEC_TABLE'])
+    
+    # Perform PIN stuff using random PIN
+        print("PIN Crypto - random PIN")
+        c['pinblockLMK']=generate_random_pin(conn, buffer, c['PAN'])
+        kz1=keys['ZPK1']
+        kz2=keys['ZPK2']
+        c['pinblockZPK1']=translate_pinblock_lmk_zpk(conn, buffer, kz1['key'], kz1['kcv'], c['PAN'], c['pinblockLMK'], h['target_lmkscheme'])
+        c['pinblockZPK2']=translate_pinblock_zpk_zpk(conn, buffer, kz1['key'], kz1['kcv'], kz2['key'], kz2['kcv'], c['PAN'], c['pinblockZPK1'], h['target_lmkscheme'])
+        verify_random_pin(conn, buffer, kz1['key'], kz1['kcv'], c['pinblockZPK1'], c['PAN'], c['pinblockLMK'], keys['DEC_TABLE'])
+        verify_random_pin(conn, buffer, kz2['key'], kz2['kcv'], c['pinblockZPK2'], c['PAN'], c['pinblockLMK'], keys['DEC_TABLE'])
+    
+    # Perform PIN stuff using Visa method
+        print("PIN Crypto - Visa method (using random pin from above)")
+        kp=keys['VISAPVK']
+        c['PVV']=generate_pvv(conn, buffer, kp['key'], kp['kcv'], c['pinblockLMK'], c['PAN'])
+        verify_pvv(conn, buffer, kz1['key'], kz1['kcv'], kp['key'], c['pinblockZPK1'], c['PAN'], c['PVV'])
+        verify_pvv(conn, buffer, kz2['key'], kz2['kcv'], kp['key'], c['pinblockZPK2'], c['PAN'], c['PVV'])
+
+def run_pinblock_examples(conn, buffer):
+    cards={}
+    cards['PAN']='1234561234567896'
+    cards['PIN']='1234'
+    keys={}
+    keys['ZPK']={}
+    zk=keys['ZPK']
+    zk['COMP_L'] = '0123456789abcdef'.upper()
+    zk['COMP_R'] = 'fedcba9876543210'.upper()
+    zk['ENC_key'] = 'UE575 1301 0595 5E73 8470 C9D8 037C AA7C'
+    zk['FORMED_key'] = 'U1518 C801 BA98 9C03 0109 9435 0EBF A9D5'
+    zk['KCV'] = '08d7b4'.upper()
+    zk['LMKKCV'] = '665641'
+    zk['LMKNAME'] = "Thales test Variant 3DES 3key LMK"
+
+    print("#####################################################################################")
+    print("                                    card details")
+    print("#####################################################################################")
+    print(cards)
+    print("#####################################################################################")
+    print("                                    key details")
+    print("#####################################################################################")
+    print(keys)
 ###########################################################################################################
 # Main code starts here
 ###########################################################################################################
@@ -638,6 +732,7 @@ parser.add_argument("--port", help="port to target HSM on (default: 1500)")
 parser.add_argument("--proto", help="Protocol to use to connect to HSM, can be tcp, udp or tls (default=tcp)", default="tcp", choices=["tcp", "udp", "tls"], type=str.lower)
 parser.add_argument("--timeout", help="Set connection timeout to HSM in seconds (default: 120)", type=int, default=120)
 parser.add_argument("--debug", help="Enable debugging to see HSM traces", action='store_true')
+parser.add_argument("--pinblock", help="PINblock caclulations for day of auth training", action='store_true')
 args = parser.parse_args()
 
 if args.hsm is None:
@@ -673,65 +768,10 @@ if __name__ == '__main__':
     if Cont == 'no':
         connection.close()
         sys.exit()
-print("Creating collateral")
-card_details=generate_cards()
-key_details=generate_keys(hsm_conn, buffer, h['target_lmkalgorithm'], h['target_lmkscheme'])
+# **********************************************************
+if args.pinblock:
+    run_pinblock_examples(hsm_conn, buffer)
+else:
+    run_default_tests(hsm_conn, buffer)
 
-# Perform hashing
-print()
-print("Hashing")
-hashes(hsm_conn, buffer, TEST_MESSAGE)
-
-# Perform RSA crypto
-print()
-print("RSA Crypto")
-kr=key_details['RSA']
-sig_len, signature=generate_signature(hsm_conn, buffer, TEST_MESSAGE, kr['private'], h['target_lmkscheme'].lower())
-validate_signature(hsm_conn, buffer, sig_len, signature, TEST_MESSAGE, kr['import_mac'], kr['import_public'], h['target_lmkscheme'].lower())
-
-for card in card_details:
-    c=card_details[card]
-    print()
-    print("Performing crypto for card", c)
-
-# Perform CVV stuff
-    print("CVV Crypto")
-    kc=key_details['CVK1']
-    c['cvv']=generate_cvv(hsm_conn, buffer, kc['key'], c['PAN'], c['expiry'], '000')
-    verify_cvv(hsm_conn, buffer, c['cvv'], kc['key'], c['PAN'], c['expiry'], '000')
-    random = secrets.SystemRandom()
-    rand_cvv = str(random.randint(0,999)).zfill(3)
-    verify_cvv(hsm_conn, buffer, rand_cvv, kc['key'], c['PAN'], c['expiry'], '000')
-
-# Perform PIN stuff using IBM method
-    print("PIN Crypto - IBM method")
-    kp=key_details['IBMPVK']
-    c['IBMpinblockLMK']=derive_IBM_pin(hsm_conn, buffer, kp['key'], c['PAN'])
-    kz1=key_details['ZPK1']
-    kz2=key_details['ZPK2']
-    c['IBMpinblockZPK1']=translate_pinblock_lmk_zpk(hsm_conn, buffer, kz1['key'], kz1['kcv'], c['PAN'], c['IBMpinblockLMK'], h['target_lmkscheme'])
-    c['IBMpinblockZPK2']=translate_pinblock_zpk_zpk(hsm_conn, buffer, kz1['key'], kz1['kcv'], kz2['key'], kz2['kcv'], c['PAN'], c['IBMpinblockZPK1'], h['target_lmkscheme'])
-    verify_IBM_pin(hsm_conn, buffer, kz1['key'], kz1['kcv'], kp['key'], c['IBMpinblockZPK1'], c['PAN'])
-    verify_IBM_pin(hsm_conn, buffer, kz2['key'], kz2['kcv'], kp['key'], c['IBMpinblockZPK2'], c['PAN'])
-
-# Perform PIN stuff using random PIN
-    print("PIN Crypto - random PIN")
-    c['pinblockLMK']=generate_random_pin(hsm_conn, buffer, c['PAN'])
-    kz1=key_details['ZPK1']
-    kz2=key_details['ZPK2']
-    c['pinblockZPK1']=translate_pinblock_lmk_zpk(hsm_conn, buffer, kz1['key'], kz1['kcv'], c['PAN'], c['pinblockLMK'], h['target_lmkscheme'])
-    c['pinblockZPK2']=translate_pinblock_zpk_zpk(hsm_conn, buffer, kz1['key'], kz1['kcv'], kz2['key'], kz2['kcv'], c['PAN'], c['pinblockZPK1'], h['target_lmkscheme'])
-    verify_random_pin(hsm_conn, buffer, kz1['key'], kz1['kcv'], c['pinblockZPK1'], c['PAN'], c['pinblockLMK'])
-    verify_random_pin(hsm_conn, buffer, kz2['key'], kz2['kcv'], c['pinblockZPK2'], c['PAN'], c['pinblockLMK'])
-
-# Perform PIN stuff using Visa method
-    print("PIN Crypto - Visa method (using random pin from above)")
-    kp=key_details['VISAPVK']
-    c['PVV']=generate_pvv(hsm_conn, buffer, kp['key'], kp['kcv'], c['pinblockLMK'], c['PAN'])
-    verify_pvv(hsm_conn, buffer, kz1['key'], kz1['kcv'], kp['key'], c['pinblockZPK1'], c['PAN'], c['PVV'])
-    verify_pvv(hsm_conn, buffer, kz2['key'], kz2['kcv'], kp['key'], c['pinblockZPK2'], c['PAN'], c['PVV'])
-
-    
-if args.debug:
-    print(card_details)
 hsm_conn.close()
